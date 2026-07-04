@@ -184,6 +184,7 @@ public class BossService {
      * 保存配置
      */
     public BossConfigEntity saveConfig(BossConfigEntity config) {
+        applySafetyDefaults(config);
         config.setCreatedAt(LocalDateTime.now());
         config.setUpdatedAt(LocalDateTime.now());
         bossConfigMapper.insert(config);
@@ -194,6 +195,7 @@ public class BossService {
      * 更新配置
      */
     public BossConfigEntity updateConfig(BossConfigEntity config) {
+        applySafetyDefaults(config);
         config.setUpdatedAt(LocalDateTime.now());
         bossConfigMapper.updateById(config);
         return config;
@@ -218,7 +220,19 @@ public class BossService {
 
         // 选择性合并：仅当请求体字段非空时才覆盖
         if (partial.getSayHi() != null) existing.setSayHi(partial.getSayHi());
-        if (partial.getDebugger() != null) existing.setDebugger(partial.getDebugger());
+        if (partial.getDebugger() != null) {
+            existing.setDebugger(partial.getDebugger());
+            if (partial.getDryRun() == null) {
+                existing.setDryRun(partial.getDebugger() == 1);
+            }
+        }
+        if (partial.getDryRun() != null) {
+            existing.setDryRun(partial.getDryRun());
+            existing.setDebugger(partial.getDryRun() ? 1 : 0);
+        }
+        if (partial.getMaxDeliveries() != null) existing.setMaxDeliveries(partial.getMaxDeliveries());
+        if (partial.getStopOnCaptcha() != null) existing.setStopOnCaptcha(partial.getStopOnCaptcha());
+        if (partial.getStopOnRiskText() != null) existing.setStopOnRiskText(partial.getStopOnRiskText());
         if (partial.getEnableAi() != null) existing.setEnableAi(partial.getEnableAi());
         if (partial.getFilterDeadHr() != null) existing.setFilterDeadHr(partial.getFilterDeadHr());
         if (partial.getSendImgResume() != null) existing.setSendImgResume(partial.getSendImgResume());
@@ -240,6 +254,7 @@ public class BossService {
         if (partial.getDeadStatus() != null) existing.setDeadStatus(partial.getDeadStatus());
 
         existing.setUpdatedAt(now);
+        applySafetyDefaults(existing);
         bossConfigMapper.updateById(existing);
         return existing;
     }
@@ -269,7 +284,12 @@ public class BossService {
 
         // 文本与布尔/数值
         config.setSayHi(entity.getSayHi());
-        config.setDebugger(entity.getDebugger() != null && entity.getDebugger() == 1);
+        boolean dryRun = entity.getDryRun() != null ? entity.getDryRun() : entity.getDebugger() != null && entity.getDebugger() == 1;
+        config.setDryRun(dryRun);
+        config.setDebugger(dryRun);
+        config.setMaxDeliveries(entity.getMaxDeliveries() != null ? entity.getMaxDeliveries() : 1);
+        config.setStopOnCaptcha(entity.getStopOnCaptcha() == null || entity.getStopOnCaptcha());
+        config.setStopOnRiskText(entity.getStopOnRiskText() == null || entity.getStopOnRiskText());
         config.setEnableAI(entity.getEnableAi() != null && entity.getEnableAi() == 1);
         config.setFilterDeadHR(entity.getFilterDeadHr() != null && entity.getFilterDeadHr() == 1);
         config.setSendImgResume(entity.getSendImgResume() != null && entity.getSendImgResume() == 1);
@@ -319,6 +339,17 @@ public class BossService {
 
         log.info("已从 boss_config 加载Boss配置，并完成括号列表解析");
         return config;
+    }
+
+    private void applySafetyDefaults(BossConfigEntity config) {
+        if (config == null) return;
+        if (config.getDryRun() == null) {
+            config.setDryRun(config.getDebugger() != null ? config.getDebugger() == 1 : true);
+        }
+        config.setDebugger(config.getDryRun() ? 1 : 0);
+        if (config.getMaxDeliveries() == null || config.getMaxDeliveries() < 1) config.setMaxDeliveries(1);
+        if (config.getStopOnCaptcha() == null) config.setStopOnCaptcha(true);
+        if (config.getStopOnRiskText() == null) config.setStopOnRiskText(true);
     }
 
     /**

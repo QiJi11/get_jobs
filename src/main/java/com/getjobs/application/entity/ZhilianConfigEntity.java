@@ -23,6 +23,21 @@ public class ZhilianConfigEntity {
     /** 薪资范围（中文名或代码，单值） */
     private String salary;
 
+    /** Dry-run模式：只审计候选，不执行真实投递 */
+    private Boolean dryRun;
+
+    /** 单次任务最多允许的真实投递数 */
+    private Integer maxDeliveries;
+
+    /** 命中验证码文本时停止任务 */
+    private Boolean stopOnCaptcha;
+
+    /** 命中风控或频控文本时停止任务 */
+    private Boolean stopOnRiskText;
+
+    /** 是否允许智联弹窗里的相似职位投递 */
+    private Boolean allowSimilarJobs;
+
     /** 创建时间 */
     private LocalDateTime createdAt;
 

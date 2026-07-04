@@ -217,6 +217,10 @@ public class ConfigService {
             }
         }
         config.setKeywords(keywords);
+        config.setDryRun(entity == null || entity.getDryRun() == null || entity.getDryRun());
+        config.setMaxDeliveries(entity != null && entity.getMaxDeliveries() != null ? entity.getMaxDeliveries() : 1);
+        config.setStopOnCaptcha(entity == null || entity.getStopOnCaptcha() == null || entity.getStopOnCaptcha());
+        config.setStopOnRiskText(entity == null || entity.getStopOnRiskText() == null || entity.getStopOnRiskText());
 
         // 城市编码：允许传中文名或代码；中文名映射为代码；缺省视为不限
         String cityCode = "";

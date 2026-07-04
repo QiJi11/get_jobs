@@ -51,6 +51,10 @@ public class Job51Service {
 
         // 关键词解析
         config.setKeywords(parseListString(entity.getKeywords()));
+        config.setDryRun(entity.getDryRun() == null || entity.getDryRun());
+        config.setMaxDeliveries(entity.getMaxDeliveries() != null ? entity.getMaxDeliveries() : 1);
+        config.setStopOnCaptcha(entity.getStopOnCaptcha() == null || entity.getStopOnCaptcha());
+        config.setStopOnRiskText(entity.getStopOnRiskText() == null || entity.getStopOnRiskText());
 
         // 城市区域：中文名或代码列表 -> 统一为代码列表（优先使用数据库映射）
         List<String> areaInputs = parseListString(entity.getJobArea());
@@ -210,6 +214,7 @@ public class Job51Service {
         if (config == null) return null;
         if (config.getId() != null) {
             // 设置更新时间
+            applySafetyDefaults(config);
             config.setUpdatedAt(java.time.LocalDateTime.now());
             job51ConfigMapper.updateById(config);
             return job51ConfigMapper.selectById(config.getId());
@@ -228,6 +233,11 @@ public class Job51Service {
             toInsert.setKeywords(incoming.getKeywords());
             toInsert.setJobArea(incoming.getJobArea());
             toInsert.setSalary(incoming.getSalary());
+            toInsert.setDryRun(incoming.getDryRun());
+            toInsert.setMaxDeliveries(incoming.getMaxDeliveries());
+            toInsert.setStopOnCaptcha(incoming.getStopOnCaptcha());
+            toInsert.setStopOnRiskText(incoming.getStopOnRiskText());
+            applySafetyDefaults(toInsert);
             toInsert.setCreatedAt(now);
             toInsert.setUpdatedAt(now);
             job51ConfigMapper.insert(toInsert);
@@ -239,11 +249,24 @@ public class Job51Service {
             if (incoming.getKeywords() != null) toUpdate.setKeywords(incoming.getKeywords());
             if (incoming.getJobArea() != null) toUpdate.setJobArea(incoming.getJobArea());
             if (incoming.getSalary() != null) toUpdate.setSalary(incoming.getSalary());
+            if (incoming.getDryRun() != null) toUpdate.setDryRun(incoming.getDryRun());
+            if (incoming.getMaxDeliveries() != null) toUpdate.setMaxDeliveries(incoming.getMaxDeliveries());
+            if (incoming.getStopOnCaptcha() != null) toUpdate.setStopOnCaptcha(incoming.getStopOnCaptcha());
+            if (incoming.getStopOnRiskText() != null) toUpdate.setStopOnRiskText(incoming.getStopOnRiskText());
+            applySafetyDefaults(toUpdate);
             toUpdate.setCreatedAt(first.getCreatedAt());
             toUpdate.setUpdatedAt(now);
             job51ConfigMapper.updateById(toUpdate);
             return job51ConfigMapper.selectById(first.getId());
         }
+    }
+
+    private void applySafetyDefaults(Job51ConfigEntity config) {
+        if (config == null) return;
+        if (config.getDryRun() == null) config.setDryRun(true);
+        if (config.getMaxDeliveries() == null || config.getMaxDeliveries() < 1) config.setMaxDeliveries(1);
+        if (config.getStopOnCaptcha() == null) config.setStopOnCaptcha(true);
+        if (config.getStopOnRiskText() == null) config.setStopOnRiskText(true);
     }
 
     // ==================== 51job 岗位数据表与持久化 ====================

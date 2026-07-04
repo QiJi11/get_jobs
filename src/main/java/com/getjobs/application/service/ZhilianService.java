@@ -53,6 +53,11 @@ public class ZhilianService {
 
         // 关键词解析：支持逗号或括号列表
         config.setKeywords(parseListString(entity.getKeywords()));
+        config.setDryRun(entity.getDryRun() == null || entity.getDryRun());
+        config.setMaxDeliveries(entity.getMaxDeliveries() != null ? entity.getMaxDeliveries() : 1);
+        config.setStopOnCaptcha(entity.getStopOnCaptcha() == null || entity.getStopOnCaptcha());
+        config.setStopOnRiskText(entity.getStopOnRiskText() == null || entity.getStopOnRiskText());
+        config.setAllowSimilarJobs(entity.getAllowSimilarJobs() != null && entity.getAllowSimilarJobs());
 
         // 城市：中文名映射到代码；缺省或“不限”映射为 0
         String city = safeTrim(entity.getCityCode());
@@ -110,6 +115,7 @@ public class ZhilianService {
     public ZhilianConfigEntity updateConfig(ZhilianConfigEntity config) {
         if (config == null) return null;
         if (config.getId() != null) {
+            applySafetyDefaults(config);
             zhilianConfigMapper.updateById(config);
             return zhilianConfigMapper.selectById(config.getId());
         }
@@ -127,6 +133,12 @@ public class ZhilianService {
             toInsert.setKeywords(incoming.getKeywords());
             toInsert.setCityCode(incoming.getCityCode());
             toInsert.setSalary(incoming.getSalary());
+            toInsert.setDryRun(incoming.getDryRun());
+            toInsert.setMaxDeliveries(incoming.getMaxDeliveries());
+            toInsert.setStopOnCaptcha(incoming.getStopOnCaptcha());
+            toInsert.setStopOnRiskText(incoming.getStopOnRiskText());
+            toInsert.setAllowSimilarJobs(incoming.getAllowSimilarJobs());
+            applySafetyDefaults(toInsert);
             toInsert.setCreatedAt(now);
             toInsert.setUpdatedAt(now);
             zhilianConfigMapper.insert(toInsert);
@@ -137,11 +149,26 @@ public class ZhilianService {
             if (incoming.getKeywords() != null) toUpdate.setKeywords(incoming.getKeywords());
             if (incoming.getCityCode() != null) toUpdate.setCityCode(incoming.getCityCode());
             if (incoming.getSalary() != null) toUpdate.setSalary(incoming.getSalary());
+            if (incoming.getDryRun() != null) toUpdate.setDryRun(incoming.getDryRun());
+            if (incoming.getMaxDeliveries() != null) toUpdate.setMaxDeliveries(incoming.getMaxDeliveries());
+            if (incoming.getStopOnCaptcha() != null) toUpdate.setStopOnCaptcha(incoming.getStopOnCaptcha());
+            if (incoming.getStopOnRiskText() != null) toUpdate.setStopOnRiskText(incoming.getStopOnRiskText());
+            if (incoming.getAllowSimilarJobs() != null) toUpdate.setAllowSimilarJobs(incoming.getAllowSimilarJobs());
+            applySafetyDefaults(toUpdate);
             toUpdate.setCreatedAt(first.getCreatedAt());
             toUpdate.setUpdatedAt(now);
             zhilianConfigMapper.updateById(toUpdate);
             return zhilianConfigMapper.selectById(first.getId());
         }
+    }
+
+    private void applySafetyDefaults(ZhilianConfigEntity config) {
+        if (config == null) return;
+        if (config.getDryRun() == null) config.setDryRun(true);
+        if (config.getMaxDeliveries() == null || config.getMaxDeliveries() < 1) config.setMaxDeliveries(1);
+        if (config.getStopOnCaptcha() == null) config.setStopOnCaptcha(true);
+        if (config.getStopOnRiskText() == null) config.setStopOnRiskText(true);
+        if (config.getAllowSimilarJobs() == null) config.setAllowSimilarJobs(false);
     }
 
     // ========== Option 辅助 ==========

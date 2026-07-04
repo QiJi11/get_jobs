@@ -23,6 +23,18 @@ public class Job51ConfigEntity {
     /** 薪资范围（中文名或代码，列表字符串） */
     private String salary;
 
+    /** Dry-run模式：只审计候选，不执行真实投递 */
+    private Boolean dryRun;
+
+    /** 单次任务最多允许的真实投递数 */
+    private Integer maxDeliveries;
+
+    /** 命中验证码文本时停止任务 */
+    private Boolean stopOnCaptcha;
+
+    /** 命中风控或频控文本时停止任务 */
+    private Boolean stopOnRiskText;
+
     /** 创建时间 */
     private LocalDateTime createdAt;
 

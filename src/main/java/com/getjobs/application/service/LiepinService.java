@@ -261,6 +261,7 @@ public class LiepinService {
      * 更新配置
      */
     public LiepinConfigEntity updateConfig(LiepinConfigEntity config) {
+        applySafetyDefaults(config);
         config.setUpdatedAt(LocalDateTime.now());
         liepinConfigMapper.updateById(config);
         return config;
@@ -274,6 +275,7 @@ public class LiepinService {
         LiepinConfigEntity existing = getFirstConfig();
         if (existing == null) {
             // 不存在记录，插入新配置
+            applySafetyDefaults(config);
             config.setCreatedAt(LocalDateTime.now());
             config.setUpdatedAt(LocalDateTime.now());
             liepinConfigMapper.insert(config);
@@ -290,9 +292,22 @@ public class LiepinService {
         if (config.getSalaryCode() != null) {
             existing.setSalaryCode(config.getSalaryCode());
         }
+        if (config.getDryRun() != null) existing.setDryRun(config.getDryRun());
+        if (config.getMaxDeliveries() != null) existing.setMaxDeliveries(config.getMaxDeliveries());
+        if (config.getStopOnCaptcha() != null) existing.setStopOnCaptcha(config.getStopOnCaptcha());
+        if (config.getStopOnRiskText() != null) existing.setStopOnRiskText(config.getStopOnRiskText());
         existing.setUpdatedAt(LocalDateTime.now());
+        applySafetyDefaults(existing);
         liepinConfigMapper.updateById(existing);
         return existing;
+    }
+
+    private void applySafetyDefaults(LiepinConfigEntity config) {
+        if (config == null) return;
+        if (config.getDryRun() == null) config.setDryRun(true);
+        if (config.getMaxDeliveries() == null || config.getMaxDeliveries() < 1) config.setMaxDeliveries(1);
+        if (config.getStopOnCaptcha() == null) config.setStopOnCaptcha(true);
+        if (config.getStopOnRiskText() == null) config.setStopOnRiskText(true);
     }
 
     // ==================== Option相关方法 ====================
