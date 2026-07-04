@@ -42,6 +42,7 @@ public class Job51JobService implements JobPlatformService {
         }
 
         try {
+            playwrightManager.initPlatform(PLATFORM);
             // 获取51job页面实例
             Page page = playwrightManager.getJob51Page();
             if (page == null) {

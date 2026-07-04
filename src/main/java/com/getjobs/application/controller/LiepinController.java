@@ -72,6 +72,7 @@ public class LiepinController {
         Map<String, Object> response = new HashMap<>();
 
         try {
+            playwrightManager.initPlatform("liepin");
             // 未登录则不允许启动
             if (!playwrightManager.isLoggedIn("liepin")) {
                 response.put("success", false);
@@ -107,6 +108,26 @@ public class LiepinController {
             response.put("success", false);
             response.put("message", "启动猎聘任务失败: " + e.getMessage());
             response.put("error", e.getClass().getSimpleName());
+            return ResponseEntity.internalServerError().body(response);
+        }
+    }
+
+    /**
+     * 显式打开猎聘页面并进入登录引导。
+     */
+    @PostMapping("/login")
+    public ResponseEntity<Map<String, Object>> triggerLiepinLogin() {
+        Map<String, Object> response = new HashMap<>();
+        try {
+            playwrightManager.initPlatform("liepin");
+            response.put("success", true);
+            response.put("message", "已打开猎聘页面，请在浏览器中完成登录");
+            response.put("loginStateSource", playwrightManager.getLoginStateSource("liepin"));
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            log.error("触发猎聘登录失败", e);
+            response.put("success", false);
+            response.put("message", "触发登录失败: " + e.getMessage());
             return ResponseEntity.internalServerError().body(response);
         }
     }

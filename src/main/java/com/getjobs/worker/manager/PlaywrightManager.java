@@ -2,6 +2,8 @@ package com.getjobs.worker.manager;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.getjobs.application.entity.CookieEntity;
+import com.getjobs.application.entity.BossConfigEntity;
+import com.getjobs.application.mapper.BossConfigMapper;
 import com.getjobs.application.service.CookieService;
 import com.microsoft.playwright.*;
 import com.microsoft.playwright.options.Cookie;
@@ -17,12 +19,13 @@ import org.springframework.scheduling.annotation.Scheduled;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Consumer;
@@ -48,6 +51,9 @@ public class PlaywrightManager {
     // 浏览器上下文（所有平台共享，在同一个窗口中打开多个标签页）
     private BrowserContext context;
 
+    // Boss独立上下文：默认使用持久化Profile，降低与其它平台Cookie互相污染的风险
+    private BrowserContext bossContext;
+
     // Boss直聘页面
     private Page bossPage;
 
@@ -62,6 +68,9 @@ public class PlaywrightManager {
 
     // 登录状态追踪（平台 -> 是否已登录）
     private final Map<String, Boolean> loginStatus = new ConcurrentHashMap<>();
+
+    // 登录态来源（平台 -> persistent_profile/cookie_db/none）
+    private final Map<String, String> loginStateSources = new ConcurrentHashMap<>();
 
     // 登录状态监听器
     private final List<Consumer<LoginStatusChange>> loginStatusListeners = new CopyOnWriteArrayList<>();
@@ -85,6 +94,7 @@ public class PlaywrightManager {
 
     // Playwright调试端口
     private static final int CDP_PORT = 7866;
+    private static final int BOSS_CDP_PORT = 7867;
 
     // 平台URL常量
     private static final String BOSS_URL = "https://www.zhipin.com";
@@ -100,78 +110,192 @@ public class PlaywrightManager {
     private volatile long last51CookieLogMs = 0L;
     private volatile int last51CookieLogCount = -1;
     private volatile String last51CookieRemark = "";
+    private final Object lifecycleLock = new Object();
 
     @Autowired
     private CookieService cookieService;
 
+    @Autowired(required = false)
+    private BossConfigMapper bossConfigMapper;
+
     /**
-     * 初始化Playwright实例（延迟初始化）
+     * 初始化 Playwright 引擎。只创建 Playwright 实例，不创建页面、不导航平台。
      */
     public void init() {
-        if (isInitialized()) {
+        synchronized (lifecycleLock) {
+            if (playwright != null) {
+                return;
+            }
+            log.info("========================================");
+            log.info("  初始化浏览器自动化引擎（不自动打开平台）");
+            log.info("========================================");
+
+            try {
+                playwright = Playwright.create();
+                log.info("✓ Playwright引擎已启动");
+                log.info("========================================");
+            } catch (Exception e) {
+                log.error("✗ 浏览器自动化引擎初始化失败", e);
+                throw new RuntimeException("Playwright初始化失败", e);
+            }
+        }
+    }
+
+    /**
+     * 按需初始化指定平台。只有显式登录、保存运行中 Cookie 或投递时才触发平台页面导航。
+     */
+    public void initPlatform(String platform) {
+        String normalized = normalizePlatform(platform);
+        if (isPlatformInitialized(normalized)) {
             return;
         }
-        log.info("========================================");
-        log.info("  初始化浏览器自动化引擎");
-        log.info("========================================");
 
-        try {
-            // 启动Playwright
-            playwright = Playwright.create();
-            log.info("✓ Playwright引擎已启动");
+        synchronized (lifecycleLock) {
+            if (isPlatformInitialized(normalized)) {
+                return;
+            }
 
-            // 创建浏览器实例，使用固定CDP端口7866，最大化启动
-            browser = playwright.chromium().launch(new BrowserType.LaunchOptions()
-                    .setHeadless(false) // 非无头模式，可视化调试
-                    .setSlowMo(50) // 放慢操作速度，便于调试
-                    .setArgs(List.of(
-                            "--remote-debugging-port=" + CDP_PORT, // 使用固定CDP端口
-                            "--start-maximized" // 最大化启动窗口
-                    )));
-            log.info("✓ Chrome浏览器已启动 (调试端口: {})", CDP_PORT);
-
-            // 创建共享的BrowserContext（所有平台在同一个窗口的不同标签页中）
-            context = browser.newContext(new Browser.NewContextOptions()
-                    .setViewportSize(null) // 不设置固定视口，使用浏览器窗口实际大小
-                    .setUserAgent(
-                            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36"));
-            log.info("✓ BrowserContext已创建（所有平台共享）");
-            injectBossInitScript(context);
-
-            // 顺序创建所有Page（避免并发创建Page导致的竞态条件）
-            log.info("开始创建所有平台的Page...");
-            bossPage = context.newPage();
-            bossPage.setDefaultTimeout(DEFAULT_TIMEOUT);
-            log.info("✓ Boss Page已创建");
-
-            liepinPage = context.newPage();
-            liepinPage.setDefaultTimeout(DEFAULT_TIMEOUT);
-            log.info("✓ 猎聘 Page已创建");
-
-            job51Page = context.newPage();
-            job51Page.setDefaultTimeout(DEFAULT_TIMEOUT);
-            log.info("✓ 51job Page已创建");
-
-            zhilianPage = context.newPage();
-            zhilianPage.setDefaultTimeout(DEFAULT_TIMEOUT);
-            log.info("✓ 智联招聘 Page已创建");
-
-            // 并发执行各平台的初始化逻辑（导航、Cookie加载等）
-            log.info("开始并发初始化所有平台...");
-            CompletableFuture<Void> bossFuture = CompletableFuture.runAsync(this::setupBossPlatform);
-            CompletableFuture<Void> liepinFuture = CompletableFuture.runAsync(this::setupLiepinPlatform);
-            CompletableFuture<Void> job51Future = CompletableFuture.runAsync(this::setup51jobPlatform);
-            CompletableFuture<Void> zhilianFuture = CompletableFuture.runAsync(this::setupZhilianPlatform);
-
-            // 等待所有平台初始化完成
-            CompletableFuture.allOf(bossFuture, liepinFuture, job51Future, zhilianFuture).join();
-
-            log.info("✓ 浏览器自动化引擎初始化完成（所有平台已并发启动）");
-            log.info("========================================");
-        } catch (Exception e) {
-            log.error("✗ 浏览器自动化引擎初始化失败", e);
-            throw new RuntimeException("Playwright初始化失败", e);
+            try {
+                switch (normalized) {
+                    case "boss" -> {
+                        ensureBossPage();
+                        setupBossPlatform();
+                    }
+                    case "liepin" -> {
+                        ensureSharedBrowserContext();
+                        if (liepinPage == null) {
+                            liepinPage = context.newPage();
+                            liepinPage.setDefaultTimeout(DEFAULT_TIMEOUT);
+                            loginStateSources.put("liepin", "cookie_db");
+                            log.info("✓ 猎聘 Page已创建");
+                        }
+                        setupLiepinPlatform();
+                    }
+                    case "51job" -> {
+                        ensureSharedBrowserContext();
+                        if (job51Page == null) {
+                            job51Page = context.newPage();
+                            job51Page.setDefaultTimeout(DEFAULT_TIMEOUT);
+                            loginStateSources.put("51job", "cookie_db");
+                            log.info("✓ 51job Page已创建");
+                        }
+                        setup51jobPlatform();
+                    }
+                    case "zhilian" -> {
+                        ensureSharedBrowserContext();
+                        if (zhilianPage == null) {
+                            zhilianPage = context.newPage();
+                            zhilianPage.setDefaultTimeout(DEFAULT_TIMEOUT);
+                            loginStateSources.put("zhilian", "cookie_db");
+                            log.info("✓ 智联招聘 Page已创建");
+                        }
+                        setupZhilianPlatform();
+                    }
+                    default -> throw new IllegalArgumentException("Unsupported platform: " + platform);
+                }
+            } catch (Exception e) {
+                log.error("初始化{}平台失败", normalized, e);
+                throw new RuntimeException("初始化" + normalized + "平台失败", e);
+            }
         }
+    }
+
+    public void initAllPlatforms() {
+        initPlatform("boss");
+        initPlatform("liepin");
+        initPlatform("51job");
+        initPlatform("zhilian");
+    }
+
+    private void ensureSharedBrowserContext() {
+        init();
+        if (browser != null && context != null) {
+            return;
+        }
+
+        browser = playwright.chromium().launch(new BrowserType.LaunchOptions()
+                .setHeadless(false)
+                .setSlowMo(50)
+                .setArgs(List.of(
+                        "--remote-debugging-port=" + CDP_PORT,
+                        "--start-maximized"
+                )));
+        log.info("✓ Chrome浏览器已启动 (调试端口: {})", CDP_PORT);
+
+        context = browser.newContext(new Browser.NewContextOptions()
+                .setViewportSize(null)
+                .setUserAgent(
+                        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36"));
+        log.info("✓ BrowserContext已创建（猎聘/51job/智联共享）");
+    }
+
+    private void ensureBossPage() throws IOException {
+        init();
+        if (bossPage != null) {
+            return;
+        }
+
+        if (useBossPersistentProfile()) {
+            bossContext = launchBossPersistentContext();
+            injectBossInitScript(bossContext);
+            bossPage = firstOrNewPage(bossContext);
+            loginStateSources.put("boss", "persistent_profile");
+            log.info("✓ Boss Page已创建（独立持久Profile）");
+        } else {
+            ensureSharedBrowserContext();
+            bossContext = context;
+            injectBossInitScript(context);
+            bossPage = context.newPage();
+            loginStateSources.put("boss", "cookie_db");
+            log.info("✓ Boss Page已创建（Cookie DB模式）");
+        }
+        bossPage.setDefaultTimeout(DEFAULT_TIMEOUT);
+    }
+
+    private String normalizePlatform(String platform) {
+        if (platform == null) {
+            throw new IllegalArgumentException("platform不能为空");
+        }
+        String normalized = platform.trim().toLowerCase(Locale.ROOT);
+        if ("job51".equals(normalized)) {
+            return "51job";
+        }
+        return normalized;
+    }
+
+    private boolean useBossPersistentProfile() {
+        try {
+            if (bossConfigMapper == null) {
+                return true;
+            }
+            BossConfigEntity config = bossConfigMapper.selectList(null).stream().findFirst().orElse(null);
+            if (config == null || config.getBrowserProfileMode() == null || config.getBrowserProfileMode().isBlank()) {
+                return true;
+            }
+            return "persistent_profile".equals(config.getBrowserProfileMode());
+        } catch (Exception e) {
+            log.warn("读取Boss登录态配置失败，默认使用持久Profile: {}", e.getMessage());
+            return true;
+        }
+    }
+
+    private BrowserContext launchBossPersistentContext() throws IOException {
+        Path profileDir = Path.of(System.getProperty("user.home"), ".getjobs", "browser-profiles", "boss");
+        Files.createDirectories(profileDir);
+        return playwright.chromium().launchPersistentContext(profileDir, new BrowserType.LaunchPersistentContextOptions()
+                .setHeadless(false)
+                .setSlowMo(80)
+                .setViewportSize(null)
+                .setUserAgent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36")
+                .setArgs(List.of(
+                        "--remote-debugging-port=" + BOSS_CDP_PORT,
+                        "--start-maximized"
+                )));
+    }
+
+    private Page firstOrNewPage(BrowserContext targetContext) {
+        List<Page> pages = targetContext.pages();
+        return pages == null || pages.isEmpty() ? targetContext.newPage() : pages.get(0);
     }
 
     /**
@@ -209,19 +333,23 @@ public class PlaywrightManager {
         log.info("开始初始化Boss直聘平台...");
         // 尝试从数据库加载Boss平台Cookie到上下文
         try {
+            if ("persistent_profile".equals(getLoginStateSource("boss"))) {
+                log.info("Boss 使用独立持久Profile，跳过SQLite Cookie注入");
+            } else {
             CookieEntity cookieEntity = cookieService.getCookieByPlatform("boss");
             if (cookieEntity != null && cookieEntity.getCookieValue() != null && !cookieEntity.getCookieValue().isBlank()) {
                 String cookieStr = cookieEntity.getCookieValue();
                 List<Cookie> cookies = filterCookiesByDomain(parseCookiesFromString(cookieStr), BOSS_DOMAIN);
 
                 if (!cookies.isEmpty()) {
-                    context.addCookies(cookies);
+                    contextForPlatform("boss").addCookies(cookies);
                     log.info("已从数据库加载Boss Cookie并注入浏览器上下文，共 {} 条", cookies.size());
                 } else {
                     log.warn("解析Cookie失败，未能加载任何Cookie");
                 }
             } else {
                 log.info("数据库未找到Boss Cookie或值为空，跳过Cookie注入");
+            }
             }
         } catch (Exception e) {
             log.warn("从数据库加载Boss Cookie失败: {}", e.getMessage());
@@ -752,7 +880,7 @@ public class PlaywrightManager {
      */
   private void save51jobCookiesToDatabase(String remark) {
       try {
-          List<com.microsoft.playwright.options.Cookie> cookies = filterCookiesByDomain(context.cookies(), JOB51_DOMAIN);
+          List<com.microsoft.playwright.options.Cookie> cookies = filterCookiesByDomain(contextForPlatform("51job").cookies(), JOB51_DOMAIN);
           // 使用ObjectMapper序列化为JSON字符串
           String cookieJson = new ObjectMapper().writeValueAsString(cookies);
           boolean result = cookieService.saveOrUpdateCookie("51job", cookieJson, remark);
@@ -788,12 +916,7 @@ public class PlaywrightManager {
      */
     public void clear51jobCookies() {
         try {
-            if (context != null) {
-                context.clearCookies();
-                log.info("已清理共享上下文中的所有Cookie");
-            } else {
-                log.warn("共享上下文不存在，无法清理Cookie");
-            }
+            clearPlatformCookies("51job");
         } catch (Exception e) {
             log.error("清理共享上下文Cookie失败: {}", e.getMessage(), e);
             throw new RuntimeException("清理共享上下文Cookie失败", e);
@@ -821,12 +944,7 @@ public class PlaywrightManager {
      */
     public void trigger51jobLogin() {
         try {
-            if (job51Page == null) {
-                if (context == null) {
-                    throw new IllegalStateException("浏览器上下文尚未初始化");
-                }
-                job51Page = context.newPage();
-            }
+            initPlatform("51job");
 
             // 如果已登录则直接返回
             if (checkIf51jobLoggedIn()) {
@@ -1120,9 +1238,7 @@ public class PlaywrightManager {
      */
     public void triggerZhilianLogin() {
         try {
-            if (zhilianPage == null) {
-                throw new IllegalStateException("智联招聘页面未初始化");
-            }
+            initPlatform("zhilian");
 
             // 导航到智联首页，确保DOM就绪
             zhilianPage.navigate(ZHILIAN_URL, new Page.NavigateOptions()
@@ -1182,7 +1298,7 @@ public class PlaywrightManager {
      */
     private void saveZhilianCookiesToDatabase(String remark) {
         try {
-            List<com.microsoft.playwright.options.Cookie> cookies = filterCookiesByDomain(context.cookies(), ZHILIAN_DOMAIN);
+            List<com.microsoft.playwright.options.Cookie> cookies = filterCookiesByDomain(contextForPlatform("zhilian").cookies(), ZHILIAN_DOMAIN);
             // 使用ObjectMapper序列化为JSON字符串
             String cookieJson = new ObjectMapper().writeValueAsString(cookies);
             boolean result = cookieService.saveOrUpdateCookie("zhilian", cookieJson, remark);
@@ -1208,6 +1324,10 @@ public class PlaywrightManager {
      * @param remark   备注
      */
     public void saveCookiesToDb(String platform, String remark) {
+        if (!isPlatformInitialized(platform)) {
+            log.info("{}平台页面尚未初始化，跳过本次Cookie保存，remark={}", platform, remark);
+            return;
+        }
         switch (platform) {
             case "boss" -> saveBossCookiesToDatabase(remark);
             case "liepin" -> saveLiepinCookiesToDatabase(remark);
@@ -1222,12 +1342,7 @@ public class PlaywrightManager {
      */
     public void clearZhilianCookies() {
         try {
-            if (context != null) {
-                context.clearCookies();
-                log.info("已清理共享上下文中的所有Cookie");
-            } else {
-                log.warn("共享上下文不存在，无法清理Cookie");
-            }
+            clearPlatformCookies("zhilian");
         } catch (Exception e) {
             log.error("清理共享上下文Cookie失败: {}", e.getMessage(), e);
             throw new RuntimeException("清理共享上下文Cookie失败", e);
@@ -1289,7 +1404,7 @@ public class PlaywrightManager {
      */
     private void saveLiepinCookiesToDatabase(String remark) {
         try {
-            List<com.microsoft.playwright.options.Cookie> cookies = filterCookiesByDomain(context.cookies(), LIEPIN_DOMAIN);
+            List<com.microsoft.playwright.options.Cookie> cookies = filterCookiesByDomain(contextForPlatform("liepin").cookies(), LIEPIN_DOMAIN);
             // 使用ObjectMapper序列化为JSON字符串
             String cookieJson = new ObjectMapper().writeValueAsString(cookies);
             boolean result = cookieService.saveOrUpdateCookie("liepin", cookieJson, remark);
@@ -1313,12 +1428,7 @@ public class PlaywrightManager {
      */
     public void clearLiepinCookies() {
         try {
-            if (context != null) {
-                context.clearCookies();
-                log.info("已清理共享上下文中的所有Cookie");
-            } else {
-                log.warn("共享上下文不存在，无法清理Cookie");
-            }
+            clearPlatformCookies("liepin");
         } catch (Exception e) {
             log.error("清理共享上下文Cookie失败: {}", e.getMessage(), e);
             throw new RuntimeException("清理共享上下文Cookie失败", e);
@@ -1383,13 +1493,73 @@ public class PlaywrightManager {
     }
 
     /**
+     * 主动触发 Boss 登录。只有这个显式入口会打开 Boss 登录页。
+     */
+    public void triggerBossLogin() {
+        try {
+            initPlatform("boss");
+            if (bossPage == null) {
+                throw new IllegalStateException("Boss页面未初始化");
+            }
+
+            if (checkIfLoggedIn()) {
+                log.info("检测到已登录Boss，跳过登录触发");
+                return;
+            }
+
+            bossPage.navigate(BOSS_URL + "/web/user/?ka=header-login", new Page.NavigateOptions()
+                    .setTimeout(60000)
+                    .setWaitUntil(WaitUntilState.DOMCONTENTLOADED));
+            try {
+                Thread.sleep(800);
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+            }
+
+            try {
+                Locator qrSwitch = bossPage.locator(".btn-sign-switch.ewm-switch").first();
+                if (qrSwitch.isVisible()) {
+                    qrSwitch.click(new Locator.ClickOptions().setTimeout(DEFAULT_TIMEOUT));
+                    log.info("已切换到Boss二维码登录，等待用户扫码...");
+                    return;
+                }
+
+                Locator tip = bossPage.getByText("APP扫码登录").first();
+                if (tip.isVisible()) {
+                    tip.click(new Locator.ClickOptions().setTimeout(DEFAULT_TIMEOUT));
+                    log.info("已点击Boss APP扫码登录入口，等待用户扫码...");
+                    return;
+                }
+
+                Locator legacy = bossPage.locator("li.sign-switch-tip").first();
+                if (legacy.isVisible()) {
+                    legacy.click(new Locator.ClickOptions().setTimeout(DEFAULT_TIMEOUT));
+                    log.info("已通过旧版选择器切换Boss二维码登录，等待用户扫码...");
+                    return;
+                }
+
+                log.info("Boss登录页已打开，未找到二维码切换按钮，请手动选择扫码登录");
+            } catch (Exception e) {
+                log.debug("切换Boss二维码登录失败: {}", e.getMessage());
+            }
+        } catch (Exception e) {
+            log.error("触发Boss登录流程失败: {}", e.getMessage(), e);
+            throw new RuntimeException("触发Boss登录流程失败", e);
+        }
+    }
+
+    /**
      * 统一的Boss Cookie保存方法（使用JSON序列化）
      *
      * @param remark 备注信息
      */
     private void saveBossCookiesToDatabase(String remark) {
         try {
-            List<com.microsoft.playwright.options.Cookie> cookies = filterCookiesByDomain(context.cookies(), BOSS_DOMAIN);
+            if ("persistent_profile".equals(getLoginStateSource("boss"))) {
+                log.info("Boss 使用独立持久Profile，跳过SQLite Cookie保存，remark={}", remark);
+                return;
+            }
+            List<com.microsoft.playwright.options.Cookie> cookies = filterCookiesByDomain(contextForPlatform("boss").cookies(), BOSS_DOMAIN);
             // 使用ObjectMapper序列化为JSON字符串
             String cookieJson = new ObjectMapper().writeValueAsString(cookies);
             boolean result = cookieService.saveOrUpdateCookie("boss", cookieJson, remark);
@@ -1414,12 +1584,7 @@ public class PlaywrightManager {
      */
     public void clearBossCookies() {
         try {
-            if (context != null) {
-                context.clearCookies();
-                log.info("已清理共享上下文中的所有Cookie");
-            } else {
-                log.warn("共享上下文不存在，无法清理Cookie");
-            }
+            clearPlatformCookies("boss");
         } catch (Exception e) {
             log.error("清理共享上下文Cookie失败: {}", e.getMessage(), e);
             throw new RuntimeException("清理共享上下文Cookie失败", e);
@@ -1495,6 +1660,10 @@ public class PlaywrightManager {
             }
 
             // 关闭共享的BrowserContext
+            if (bossContext != null && bossContext != context) {
+                bossContext.close();
+                log.info("Boss独立BrowserContext已关闭");
+            }
             if (context != null) {
                 context.close();
                 log.info("共享BrowserContext已关闭");
@@ -1520,7 +1689,31 @@ public class PlaywrightManager {
      * 检查Playwright是否已初始化
      */
     public boolean isInitialized() {
-        return playwright != null && browser != null && bossPage != null;
+        return playwright != null;
+    }
+
+    public boolean hasSharedBrowser() {
+        return browser != null && context != null;
+    }
+
+    public boolean isPlatformInitialized(String platform) {
+        String normalized = normalizePlatform(platform);
+        return switch (normalized) {
+            case "boss" -> bossPage != null;
+            case "liepin" -> liepinPage != null;
+            case "51job" -> job51Page != null;
+            case "zhilian" -> zhilianPage != null;
+            default -> false;
+        };
+    }
+
+    public Map<String, Boolean> getPlatformInitializationStatus() {
+        return Map.of(
+                "boss", bossPage != null,
+                "liepin", liepinPage != null,
+                "51job", job51Page != null,
+                "zhilian", zhilianPage != null
+        );
     }
 
     /**
@@ -1528,6 +1721,14 @@ public class PlaywrightManager {
      */
     public int getCdpPort() {
         return CDP_PORT;
+    }
+
+    public int getBossCdpPort() {
+        return BOSS_CDP_PORT;
+    }
+
+    public String getLoginStateSource(String platform) {
+        return loginStateSources.getOrDefault(platform, "none");
     }
 
     /**
@@ -1571,52 +1772,8 @@ public class PlaywrightManager {
         if (previousStatus == null || previousStatus != isLoggedIn) {
             loginStatus.put(platform, isLoggedIn);
 
-            // Boss平台：在设置未登录状态时，顺带引导到登录页并切换二维码扫码
-            if ("boss".equals(platform) && !isLoggedIn) {
-                try {
-                    if (bossPage != null) {
-                        String currentUrl = null;
-                        try { currentUrl = bossPage.url(); } catch (Exception ignored) {}
-
-                        // 避免重复导航：若当前已在登录页则不再二次跳转
-                        if (currentUrl == null || !currentUrl.contains("/web/user/")) {
-                            bossPage.navigate(BOSS_URL + "/web/user/?ka=header-login");
-                            try { Thread.sleep(800); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
-                        }
-
-                        // 尝试切换到二维码登录（点击“APP扫码登录”按钮），优先使用新版选择器
-                        try {
-                            Locator qrSwitch = bossPage.locator(".btn-sign-switch.ewm-switch").first();
-                            if (qrSwitch.isVisible()) {
-                                qrSwitch.click();
-                            } else {
-                                // 兜底：按文本匹配内部提示
-                                Locator tip = bossPage.getByText("APP扫码登录").first();
-                                if (tip.isVisible()) {
-                                    tip.click();
-                                    log.info("已点击包含文本的二维码登录切换提示（APP扫码登录）");
-                                } else {
-                                    // 兼容旧版选择器
-                                    Locator legacy = bossPage.locator("li.sign-switch-tip").first();
-                                    if (legacy.isVisible()) {
-                                        legacy.click();
-                                        log.info("已通过旧版选择器切换二维码登录（li.sign-switch-tip）");
-                                    } else {
-                                        log.info("未找到二维码登录切换按钮，保持当前登录页");
-                                    }
-                                }
-                            }
-                        } catch (Exception e) {
-                            log.debug("切换二维码登录失败: {}", e.getMessage());
-                        }
-                    }
-                } catch (Exception e) {
-                    log.debug("设置Boss未登录状态时执行登录引导失败: {}", e.getMessage());
-                }
-            }
-
             // 通知所有监听器（触发SSE推送）
-            LoginStatusChange change = new LoginStatusChange(platform, isLoggedIn, System.currentTimeMillis());
+            LoginStatusChange change = new LoginStatusChange(platform, isLoggedIn, System.currentTimeMillis(), getLoginStateSource(platform));
             loginStatusListeners.forEach(listener -> {
                 try {
                     listener.accept(change);
@@ -1705,9 +1862,37 @@ public class PlaywrightManager {
         return filtered;
     }
 
+    private BrowserContext contextForPlatform(String platform) {
+        if ("boss".equals(platform) && bossContext != null) {
+            return bossContext;
+        }
+        return context;
+    }
+
+    private String domainForPlatform(String platform) {
+        return switch (platform) {
+            case "boss" -> BOSS_DOMAIN;
+            case "liepin" -> LIEPIN_DOMAIN;
+            case "51job" -> JOB51_DOMAIN;
+            case "zhilian" -> ZHILIAN_DOMAIN;
+            default -> throw new IllegalArgumentException("Unsupported platform: " + platform);
+        };
+    }
+
+    private void clearPlatformCookies(String platform) {
+        BrowserContext targetContext = contextForPlatform(platform);
+        if (targetContext == null) {
+            log.warn("{} 上下文不存在，无法清理Cookie", platform);
+            return;
+        }
+        String domain = domainForPlatform(platform);
+        targetContext.clearCookies(new BrowserContext.ClearCookiesOptions().setDomain(java.util.regex.Pattern.compile("(^|\\.)" + java.util.regex.Pattern.quote(domain) + "$")));
+        log.info("已清理 {} 平台Cookie，domain={}", platform, domain);
+    }
+
     /**
      * LoginStatusChange - 登录状态变化DTO
      */
-    public record LoginStatusChange(String platform, boolean isLoggedIn, long timestamp) {
+    public record LoginStatusChange(String platform, boolean isLoggedIn, long timestamp, String loginStateSource) {
     }
 }

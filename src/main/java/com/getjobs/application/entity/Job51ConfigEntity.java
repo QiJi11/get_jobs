@@ -35,6 +35,9 @@ public class Job51ConfigEntity {
     /** 命中风控或频控文本时停止任务 */
     private Boolean stopOnRiskText;
 
+    /** 登录态来源：persistent_profile 或 cookie_db */
+    private String browserProfileMode;
+
     /** 创建时间 */
     private LocalDateTime createdAt;
 

@@ -296,6 +296,7 @@ public class LiepinService {
         if (config.getMaxDeliveries() != null) existing.setMaxDeliveries(config.getMaxDeliveries());
         if (config.getStopOnCaptcha() != null) existing.setStopOnCaptcha(config.getStopOnCaptcha());
         if (config.getStopOnRiskText() != null) existing.setStopOnRiskText(config.getStopOnRiskText());
+        if (config.getBrowserProfileMode() != null) existing.setBrowserProfileMode(config.getBrowserProfileMode());
         existing.setUpdatedAt(LocalDateTime.now());
         applySafetyDefaults(existing);
         liepinConfigMapper.updateById(existing);
@@ -308,6 +309,9 @@ public class LiepinService {
         if (config.getMaxDeliveries() == null || config.getMaxDeliveries() < 1) config.setMaxDeliveries(1);
         if (config.getStopOnCaptcha() == null) config.setStopOnCaptcha(true);
         if (config.getStopOnRiskText() == null) config.setStopOnRiskText(true);
+        if (!"persistent_profile".equals(config.getBrowserProfileMode()) && !"cookie_db".equals(config.getBrowserProfileMode())) {
+            config.setBrowserProfileMode("cookie_db");
+        }
     }
 
     // ==================== Option相关方法 ====================

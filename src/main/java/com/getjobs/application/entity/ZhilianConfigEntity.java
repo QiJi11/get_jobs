@@ -38,6 +38,9 @@ public class ZhilianConfigEntity {
     /** 是否允许智联弹窗里的相似职位投递 */
     private Boolean allowSimilarJobs;
 
+    /** 登录态来源：persistent_profile 或 cookie_db */
+    private String browserProfileMode;
+
     /** 创建时间 */
     private LocalDateTime createdAt;
 

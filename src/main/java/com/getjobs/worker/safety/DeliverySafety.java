@@ -1,10 +1,15 @@
 package com.getjobs.worker.safety;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.microsoft.playwright.Page;
 import lombok.extern.slf4j.Slf4j;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.LocalDateTime;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.function.Consumer;
 
 /**
@@ -12,12 +17,17 @@ import java.util.function.Consumer;
  */
 @Slf4j
 public class DeliverySafety {
+    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+    private static final Path ACTION_LOG_PATH = Path.of("logs", "delivery-actions.jsonl");
     private static final List<String> CAPTCHA_TEXTS = List.of(
             "验证码", "滑块", "安全验证", "访问验证", "请按住滑块", "captcha"
     );
     private static final List<String> RISK_TEXTS = List.of(
             "风控", "频控", "操作过于频繁", "访问受限", "异常访问", "请求过多",
-            "今日投递太多", "达到上限", "次数过多", "稍后再试", "休息一下明天再来"
+            "今日投递太多", "达到上限", "次数过多", "稍后再试", "休息一下明天再来",
+            "今日沟通人数已达上限", "今日打招呼已达上限", "沟通次数已用完",
+            "今日沟通次数已达上限", "已达上限", "账号异常", "安全原因",
+            "操作失败", "操作太频繁", "请明天再试", "系统繁忙"
     );
 
     private final String platform;
@@ -217,8 +227,33 @@ public class DeliverySafety {
                 LocalDateTime.now()
         );
         log.info(message);
+        appendJsonl(safeJob, action, result, reason);
         if (progressEmitter != null) {
             progressEmitter.accept(message);
+        }
+    }
+
+    private void appendJsonl(DeliveryJobInfo jobInfo, String action, DeliveryActionResult result, String reason) {
+        try {
+            Files.createDirectories(ACTION_LOG_PATH.getParent());
+            Map<String, Object> record = new LinkedHashMap<>();
+            record.put("platform", platform);
+            record.put("company", jobInfo.getCompany());
+            record.put("job", jobInfo.getJobName());
+            record.put("urlOrId", jobInfo.getUrlOrId());
+            record.put("action", action == null ? "-" : action);
+            record.put("dryRun", dryRun);
+            record.put("result", String.valueOf(result));
+            record.put("reason", reason == null || reason.isBlank() ? "-" : reason.replace('\n', ' ').trim());
+            record.put("time", LocalDateTime.now().toString());
+            Files.writeString(
+                    ACTION_LOG_PATH,
+                    OBJECT_MAPPER.writeValueAsString(record) + System.lineSeparator(),
+                    java.nio.file.StandardOpenOption.CREATE,
+                    java.nio.file.StandardOpenOption.APPEND
+            );
+        } catch (Exception e) {
+            log.debug("写入投递动作JSONL失败 platform={} action={}: {}", platform, action, e.getMessage());
         }
     }
 

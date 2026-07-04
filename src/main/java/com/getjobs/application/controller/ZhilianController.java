@@ -271,6 +271,7 @@ public class ZhilianController {
         Map<String, Object> response = new HashMap<>();
 
         try {
+            playwrightManager.initPlatform("zhilian");
             // 未登录则不允许启动
             if (!playwrightManager.isLoggedIn("zhilian")) {
                 response.put("success", false);

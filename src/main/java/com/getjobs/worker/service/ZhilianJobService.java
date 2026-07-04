@@ -42,6 +42,7 @@ public class ZhilianJobService implements JobPlatformService {
         }
 
         try {
+            playwrightManager.initPlatform(PLATFORM);
             // 获取智联招聘页面实例
             Page page = playwrightManager.getZhilianPage();
             if (page == null) {

@@ -4,6 +4,7 @@ import { BiStop } from 'react-icons/bi'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Select } from '@/components/ui/select'
 
 export interface SafetyConfigValues {
   dryRun?: boolean
@@ -11,12 +12,19 @@ export interface SafetyConfigValues {
   stopOnCaptcha?: boolean
   stopOnRiskText?: boolean
   allowSimilarJobs?: boolean
+  browserProfileMode?: string
+  minActionDelayMs?: number
+  maxActionDelayMs?: number
+  pauseEveryDeliveries?: number
+  pauseSeconds?: number
 }
 
 interface SafetyControlsProps {
   config: SafetyConfigValues
   onChange: (patch: Partial<SafetyConfigValues>) => void
   showSimilarJobs?: boolean
+  showBossCadence?: boolean
+  loginStateSource?: string
 }
 
 type NormalizedSafetyConfigValues = Required<SafetyConfigValues>
@@ -32,6 +40,11 @@ export function withSafetyDefaults<T extends SafetyConfigValues>(config: T): T &
     stopOnCaptcha: config.stopOnCaptcha ?? true,
     stopOnRiskText: config.stopOnRiskText ?? true,
     allowSimilarJobs: config.allowSimilarJobs ?? false,
+    browserProfileMode: config.browserProfileMode ?? 'cookie_db',
+    minActionDelayMs: config.minActionDelayMs ?? 2500,
+    maxActionDelayMs: config.maxActionDelayMs ?? 6500,
+    pauseEveryDeliveries: config.pauseEveryDeliveries ?? 1,
+    pauseSeconds: config.pauseSeconds ?? 20,
   }
 }
 
@@ -46,9 +59,14 @@ export function getDeliveryModeLabel(config: SafetyConfigValues): string {
 /**
  * 渲染平台通用安全控制项。
  */
-export default function SafetyControls({ config, onChange, showSimilarJobs = false }: SafetyControlsProps) {
+export default function SafetyControls({ config, onChange, showSimilarJobs = false, showBossCadence = false, loginStateSource }: SafetyControlsProps) {
   const safe = withSafetyDefaults(config)
   const updateBool = (key: keyof SafetyConfigValues, checked: boolean) => onChange({ [key]: checked } as Partial<SafetyConfigValues>)
+  const sourceLabel = loginStateSource === 'persistent_profile'
+    ? 'Persistent Profile'
+    : loginStateSource === 'cookie_db'
+      ? 'Cookie DB'
+      : '需要重新登录'
 
   return (
     <Card className="animate-in fade-in slide-in-from-bottom-5 duration-700">
@@ -114,6 +132,70 @@ export default function SafetyControls({ config, onChange, showSimilarJobs = fal
             </span>
           </label>
         </div>
+
+        <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="space-y-2">
+            <Label htmlFor="browserProfileMode">登录持久化</Label>
+            <Select
+              id="browserProfileMode"
+              value={safe.browserProfileMode}
+              onChange={(event) => onChange({ browserProfileMode: event.target.value })}
+            >
+              <option value="cookie_db">Cookie DB</option>
+              <option value="persistent_profile">Persistent Profile</option>
+            </Select>
+            <p className="text-xs text-muted-foreground">Boss 默认使用独立持久 Profile；其它平台默认 Cookie DB。</p>
+          </div>
+          <div className="rounded-lg border border-white/20 bg-white/5 p-3">
+            <span className="block text-sm font-medium">当前登录来源</span>
+            <span className="mt-1 block text-sm text-muted-foreground">{sourceLabel}</span>
+          </div>
+        </div>
+
+        {showBossCadence && (
+          <div className="mt-4 grid grid-cols-1 md:grid-cols-4 gap-4">
+            <div className="space-y-2">
+              <Label htmlFor="minActionDelayMs">最小等待 ms</Label>
+              <Input
+                id="minActionDelayMs"
+                type="number"
+                min={1000}
+                value={safe.minActionDelayMs}
+                onChange={(event) => onChange({ minActionDelayMs: Number(event.target.value) || 2500 })}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="maxActionDelayMs">最大等待 ms</Label>
+              <Input
+                id="maxActionDelayMs"
+                type="number"
+                min={1000}
+                value={safe.maxActionDelayMs}
+                onChange={(event) => onChange({ maxActionDelayMs: Number(event.target.value) || 6500 })}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="pauseEveryDeliveries">每 N 条暂停</Label>
+              <Input
+                id="pauseEveryDeliveries"
+                type="number"
+                min={1}
+                value={safe.pauseEveryDeliveries}
+                onChange={(event) => onChange({ pauseEveryDeliveries: Number(event.target.value) || 1 })}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="pauseSeconds">暂停秒数</Label>
+              <Input
+                id="pauseSeconds"
+                type="number"
+                min={0}
+                value={safe.pauseSeconds}
+                onChange={(event) => onChange({ pauseSeconds: Number(event.target.value) || 20 })}
+              />
+            </div>
+          </div>
+        )}
 
         {showSimilarJobs && (
           <div className="mt-4 rounded-lg border border-red-300/60 bg-red-500/10 p-3">

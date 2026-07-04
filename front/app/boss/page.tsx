@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { createSSEWithBackoff } from '@/lib/sse'
 import { createPortal } from 'react-dom'
-import { BiBriefcase, BiSave, BiSearch, BiMoney, BiBuilding, BiTrash, BiPlus, BiPlay, BiStop, BiLogOut } from 'react-icons/bi'
+import { BiBriefcase, BiSave, BiSearch, BiMoney, BiBuilding, BiTrash, BiPlus, BiPlay, BiStop, BiLogOut, BiLogIn } from 'react-icons/bi'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -21,6 +21,11 @@ interface BossConfig {
   maxDeliveries?: number
   stopOnCaptcha?: boolean
   stopOnRiskText?: boolean
+  browserProfileMode?: string
+  minActionDelayMs?: number
+  maxActionDelayMs?: number
+  pauseEveryDeliveries?: number
+  pauseSeconds?: number
   waitTime?: number
   keywords?: string
   cityCode?: string
@@ -81,6 +86,11 @@ export default function BossPage() {
     maxDeliveries: 1,
     stopOnCaptcha: true,
     stopOnRiskText: true,
+    browserProfileMode: 'persistent_profile',
+    minActionDelayMs: 2500,
+    maxActionDelayMs: 6500,
+    pauseEveryDeliveries: 1,
+    pauseSeconds: 20,
   })
   // 关键词显示用（无括号无引号，逗号分隔）
   const [keywordsDisplay, setKeywordsDisplay] = useState<string>('')
@@ -107,7 +117,9 @@ export default function BossPage() {
   const [loading, setLoading] = useState(true)
   const [isLoggedIn, setIsLoggedIn] = useState(false)
   const [isDelivering, setIsDelivering] = useState(false)
+  const [openingLogin, setOpeningLogin] = useState(false)
   const [checkingLogin, setCheckingLogin] = useState(true)
+  const [loginStateSource, setLoginStateSource] = useState('none')
   const [showLogoutDialog, setShowLogoutDialog] = useState(false)
   const [showSaveDialog, setShowSaveDialog] = useState(false)
   const [saveResult, setSaveResult] = useState<{ success: boolean; message: string } | null>(null)
@@ -136,6 +148,7 @@ export default function BossPage() {
             try {
               const data = JSON.parse(event.data)
               setIsLoggedIn(data.bossLoggedIn || false)
+              setLoginStateSource(data.loginStateSources?.boss || 'none')
               setCheckingLogin(false)
             } catch (error) {
               console.error('[SSE] 解析连接消息失败:', error)
@@ -149,6 +162,7 @@ export default function BossPage() {
               const data = JSON.parse(event.data)
               if (data.platform === 'boss') {
                 setIsLoggedIn(data.isLoggedIn)
+                setLoginStateSource(data.loginStateSource || 'none')
                 setCheckingLogin(false)
               }
             } catch (error) {
@@ -190,6 +204,7 @@ export default function BossPage() {
           ...data.config,
           cityCode: normalizeCityCode(data.config.cityCode),
           jobType: normalizeJobType(data.config.jobType),
+          browserProfileMode: data.config.browserProfileMode ?? 'persistent_profile',
         }))
         // 将后端存储的关键词（可能是 JSON 数组或括号列表）转为展示用逗号分隔文本
         const toDisplayKeywords = (raw?: string): string => {
@@ -478,6 +493,23 @@ export default function BossPage() {
     }
   }
 
+  const handleOpenLogin = async () => {
+    try {
+      setOpeningLogin(true)
+      const response = await fetch('http://localhost:8888/api/boss/login', { method: 'POST' })
+      const data = await response.json()
+      if (data.loginStateSource) setLoginStateSource(data.loginStateSource)
+      if (!data.success) {
+        console.warn('打开Boss登录失败：', data.message)
+      }
+    } catch (error) {
+      console.error('Failed to open Boss login:', error)
+    } finally {
+      setOpeningLogin(false)
+      setCheckingLogin(false)
+    }
+  }
+
   const handleStopDelivery = async () => {
     try {
       const response = await fetch('http://localhost:8888/api/boss/stop', {
@@ -544,8 +576,8 @@ export default function BossPage() {
                 <BiPlay className="mr-1" /> 检查登录中...
               </Button>
             ) : !isLoggedIn ? (
-              <Button size="sm" disabled className="rounded-full bg-gray-300 text-gray-600 cursor-not-allowed px-4 shadow">
-                <BiPlay className="mr-1" /> 请先登录Boss
+              <Button onClick={handleOpenLogin} size="sm" disabled={openingLogin} className="rounded-full bg-gradient-to-r from-sky-500 to-cyan-500 hover:from-sky-600 hover:to-cyan-600 text-white px-4 shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-105 disabled:opacity-60 disabled:hover:scale-100">
+                <BiLogIn className="mr-1" /> {openingLogin ? '打开中...' : '打开Boss登录'}
               </Button>
             ) : isDelivering ? (
               <Button onClick={handleStopDelivery} size="sm" className="rounded-full bg-gradient-to-r from-red-500 to-rose-600 hover:from-red-600 hover:to-rose-700 text-white px-4 shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-105">
@@ -594,6 +626,8 @@ export default function BossPage() {
           <SafetyControls
             config={config}
             onChange={(patch) => setConfig((prev) => ({ ...prev, ...patch }))}
+            showBossCadence
+            loginStateSource={loginStateSource}
           />
 
           {/* 搜索配置 */}

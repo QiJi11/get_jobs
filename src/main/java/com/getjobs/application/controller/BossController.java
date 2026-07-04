@@ -76,6 +76,7 @@ public class BossController {
             ));
         }
 
+        playwrightManager.initPlatform("boss");
         CompletableFuture.runAsync(() -> bossJobService.executeDelivery(this::sendBossProgress));
 
         return ResponseEntity.ok(Map.of(
@@ -84,11 +85,30 @@ public class BossController {
         ));
     }
 
+    /** POST - 显式打开Boss登录页 */
+    @PostMapping("/login")
+    public ResponseEntity<Map<String, Object>> loginBoss() {
+        Map<String, Object> response = new HashMap<>();
+        try {
+            playwrightManager.triggerBossLogin();
+            response.put("success", true);
+            response.put("message", "已打开Boss登录页，请在浏览器中扫码登录");
+            response.put("loginStateSource", playwrightManager.getLoginStateSource("boss"));
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            log.error("触发Boss登录失败", e);
+            response.put("success", false);
+            response.put("message", "触发Boss登录失败: " + e.getMessage());
+            return ResponseEntity.internalServerError().body(response);
+        }
+    }
+
     /** POST - 启动Boss投递任务（前端使用的接口）*/
     @PostMapping("/start")
     public ResponseEntity<Map<String, Object>> startBoss() {
         Map<String, Object> response = new HashMap<>();
         try {
+            playwrightManager.initPlatform("boss");
             if (!playwrightManager.isLoggedIn("boss")) {
                 response.put("success", false);
                 response.put("message", "请先登录Boss直聘");

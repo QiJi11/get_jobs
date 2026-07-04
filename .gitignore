@@ -42,6 +42,7 @@ build/
 data.json
 src/main/java/boss/data.json
 merge_prs.log
+logs/
 ### Mac OS ###
 .DS_Store
 cookie.json

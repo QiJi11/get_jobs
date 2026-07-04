@@ -28,6 +28,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.Supplier;
 
 import static com.getjobs.worker.boss.Locators.*;
@@ -61,6 +62,7 @@ public class Boss {
     @Setter
     private Supplier<Boolean> shouldStopCallback;
     private DeliverySafety safety;
+    private int completedRealActions;
 
     private final List<Job> resultList = new ArrayList<>();
 
@@ -680,6 +682,7 @@ public class Boss {
             try { detailPage.close(); } catch (Exception ignore) {}
             return;
         }
+        applyBossActionDelay("boss.start-chat", safetyJob);
         chatBtn.first().click();
         PlaywrightUtil.sleep(1);
 
@@ -738,14 +741,22 @@ public class Boss {
         // 7. 点击发送按钮（div.send-message 或 button.btn-send）
         Locator sendText = detailPage.locator("div.send-message, button[type='send'].btn-send, button.btn-send");
         boolean sendSuccess = false;
+        boolean sendConfirmed = false;
         if (sendText.count() > 0) {
+            applyBossActionDelay("boss.send-message", safetyJob);
             sendText.first().click();
-            PlaywrightUtil.sleep(1);
+            PlaywrightUtil.sleep(2);
             sendSuccess = true;
+            DeliveryDecision afterSendDecision = safety.checkRisk(detailPage, safetyJob, "boss.after-send-risk-check");
+            if (!afterSendDecision.isAllowed()) {
+                try { detailPage.close(); } catch (Exception ignore) {}
+                return;
+            }
+            sendConfirmed = hasBossSendConfirmation(detailPage, inputLocator, message);
             try {
                 detailPage.locator("i.icon-close").first().click();
             } catch (Exception e) {
-                log.error("发送文本小窗口关闭失败！");
+                log.debug("发送文本小窗口关闭失败：{}", e.getMessage());
             }
         } else {
             log.warn("未找到发送按钮，自动跳过！岗位：{}", job.getJobName());
@@ -767,7 +778,7 @@ public class Boss {
         PlaywrightUtil.sleep(1);
 
         // 10. 更新数据库投递状态 & 成功投递加入结果
-        if (sendSuccess) {
+        if (sendSuccess && sendConfirmed) {
             // 从详情链接提取 encrypt_id，并映射到 encrypt_user_id
             String encryptId = extractEncryptId(detailUrl);
             String encryptUserId = encryptId != null ? encryptIdToUserId.get(encryptId) : null;
@@ -783,6 +794,20 @@ public class Boss {
             }
             resultList.add(job);
             safety.recordDelivered(safetyJob, "boss.send-message", "message sent");
+            recordBossRealActionCompleted(safetyJob);
+        } else if (sendSuccess) {
+            String encryptId = extractEncryptId(detailUrl);
+            String encryptUserId = encryptId != null ? encryptIdToUserId.get(encryptId) : null;
+            if (encryptId != null && encryptUserId != null) {
+                try {
+                    bossService.updateDeliveryStatus(encryptId, encryptUserId, "可能已投递");
+                    log.warn("发送点击后未确认投递结果 | 公司：{} | 岗位：{} | encryptId：{} | encryptUserId：{}", job.getCompanyName(), job.getJobName(), encryptId, encryptUserId);
+                } catch (Exception e) {
+                    log.warn("更新投递状态为可能已投递异常：{}", e.getMessage());
+                }
+            }
+            safety.recordPossiblyDelivered(safetyJob, "boss.send-message", "send clicked but confirmation missing");
+            recordBossRealActionCompleted(safetyJob);
         } else {
             // 若发生发送失败，也进行状态更新
             String encryptId = extractEncryptId(detailUrl);
@@ -796,6 +821,63 @@ public class Boss {
                 }
             }
             safety.recordFailed(safetyJob, "boss.send-message", "message not sent");
+        }
+    }
+
+    private void applyBossActionDelay(String action, DeliveryJobInfo jobInfo) {
+        if (safety == null || safety.isDryRun()) {
+            return;
+        }
+        int minMs = config != null && config.getMinActionDelayMs() != null ? config.getMinActionDelayMs() : 2500;
+        int maxMs = config != null && config.getMaxActionDelayMs() != null ? config.getMaxActionDelayMs() : 6500;
+        minMs = Math.max(1000, minMs);
+        maxMs = Math.max(minMs, maxMs);
+        int delay = ThreadLocalRandom.current().nextInt(minMs, maxMs + 1);
+        log.info("Boss真实动作前等待 {}ms | action={} | 公司={} | 岗位={}", delay, action, jobInfo.getCompany(), jobInfo.getJobName());
+        sleepMillis(delay);
+    }
+
+    private void recordBossRealActionCompleted(DeliveryJobInfo jobInfo) {
+        if (safety == null || safety.isDryRun()) {
+            return;
+        }
+        completedRealActions++;
+        int pauseEvery = config != null && config.getPauseEveryDeliveries() != null ? config.getPauseEveryDeliveries() : 1;
+        int pauseSeconds = config != null && config.getPauseSeconds() != null ? config.getPauseSeconds() : 20;
+        if (pauseEvery > 0 && pauseSeconds > 0 && completedRealActions % pauseEvery == 0 && !shouldStop()) {
+            log.info("Boss真实动作阶段暂停 {}s | completed={} | 公司={} | 岗位={}", pauseSeconds, completedRealActions, jobInfo.getCompany(), jobInfo.getJobName());
+            sleepMillis(pauseSeconds * 1000);
+        }
+    }
+
+    private boolean hasBossSendConfirmation(Page detailPage, Locator inputLocator, String message) {
+        try {
+            if (inputLocator.count() > 0) {
+                String remainingText = inputLocator.first().textContent();
+                if (remainingText == null || remainingText.trim().isEmpty()) {
+                    return true;
+                }
+                if (message != null && !message.isBlank() && !remainingText.contains(message)) {
+                    return true;
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        try {
+            Object bodyText = detailPage.evaluate("() => document.body ? (document.body.innerText || '') : ''");
+            if (bodyText instanceof String text) {
+                return text.contains("继续沟通") || text.contains("已发送") || text.contains("发送成功");
+            }
+        } catch (Exception ignored) {
+        }
+        return false;
+    }
+
+    private void sleepMillis(int millis) {
+        try {
+            Thread.sleep(Math.max(0, millis));
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
     }
 

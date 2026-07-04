@@ -36,6 +36,14 @@ class SafetyConfigSchemaInitializerTest {
             assertCommonColumns(connection, "zhilian_config");
             assertTrue(columnExists(connection, "zhilian_config", "allow_similar_jobs"));
             assertEquals(0, readInt(connection, "zhilian_config", "allow_similar_jobs"));
+            assertTrue(columnExists(connection, "boss_config", "browser_profile_mode"));
+            assertTrue(columnExists(connection, "boss_config", "min_action_delay_ms"));
+            assertTrue(columnExists(connection, "boss_config", "max_action_delay_ms"));
+            assertTrue(tableExists(connection, "filter_template"));
+            assertEquals("persistent_profile", readString(connection, "boss_config", "browser_profile_mode"));
+            assertEquals("cookie_db", readString(connection, "liepin_config", "browser_profile_mode"));
+            assertEquals("cookie_db", readString(connection, "job51_config", "browser_profile_mode"));
+            assertEquals("cookie_db", readString(connection, "zhilian_config", "browser_profile_mode"));
         }
     }
 
@@ -76,11 +84,26 @@ class SafetyConfigSchemaInitializerTest {
         return false;
     }
 
+    private boolean tableExists(Connection connection, String table) throws Exception {
+        try (Statement statement = connection.createStatement();
+             ResultSet resultSet = statement.executeQuery("SELECT name FROM sqlite_master WHERE type='table' AND name='" + table + "'")) {
+            return resultSet.next();
+        }
+    }
+
     private int readInt(Connection connection, String table, String column) throws Exception {
         try (Statement statement = connection.createStatement();
              ResultSet resultSet = statement.executeQuery("SELECT " + column + " FROM " + table + " LIMIT 1")) {
             assertTrue(resultSet.next());
             return resultSet.getInt(column);
+        }
+    }
+
+    private String readString(Connection connection, String table, String column) throws Exception {
+        try (Statement statement = connection.createStatement();
+             ResultSet resultSet = statement.executeQuery("SELECT " + column + " FROM " + table + " LIMIT 1")) {
+            assertTrue(resultSet.next());
+            return resultSet.getString(column);
         }
     }
 }

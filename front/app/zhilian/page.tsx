@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import { createSSEWithBackoff } from '@/lib/sse'
-import { BiLogOut, BiSave, BiBriefcase, BiPlay, BiStop } from 'react-icons/bi'
+import { BiLogOut, BiSave, BiBriefcase, BiPlay, BiStop, BiLogIn } from 'react-icons/bi'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -23,6 +23,7 @@ interface ZhilianConfig {
   stopOnCaptcha?: boolean
   stopOnRiskText?: boolean
   allowSimilarJobs?: boolean
+  browserProfileMode?: string
 }
 
 interface Option { name: string; code: string }
@@ -31,7 +32,9 @@ interface ZhilianOptions { city: Option[] }
 export default function ZhilianPage() {
   const [isLoggedIn, setIsLoggedIn] = useState(false)
   const [isDelivering, setIsDelivering] = useState(false)
+  const [openingLogin, setOpeningLogin] = useState(false)
   const [checkingLogin, setCheckingLogin] = useState(true)
+  const [loginStateSource, setLoginStateSource] = useState('none')
   const [showLogoutDialog, setShowLogoutDialog] = useState(false)
   const [showSaveDialog, setShowSaveDialog] = useState(false)
   const [saveResult, setSaveResult] = useState<{ success: boolean; message: string } | null>(null)
@@ -48,6 +51,7 @@ export default function ZhilianPage() {
     stopOnCaptcha: true,
     stopOnRiskText: true,
     allowSimilarJobs: false,
+    browserProfileMode: 'cookie_db',
   })
   const [options, setOptions] = useState<ZhilianOptions>({ city: [] })
   const [loadingConfig, setLoadingConfig] = useState(true)
@@ -71,6 +75,7 @@ export default function ZhilianPage() {
             try {
               const data = JSON.parse(event.data)
               setIsLoggedIn(data.zhilianLoggedIn || false)
+              setLoginStateSource(data.loginStateSources?.zhilian || 'none')
               setCheckingLogin(false)
             } catch (error) {
               console.error('[智联招聘 SSE] 解析连接消息失败:', error)
@@ -84,6 +89,7 @@ export default function ZhilianPage() {
               const data = JSON.parse(event.data)
               if (data.platform === 'zhilian') {
                 setIsLoggedIn(data.isLoggedIn)
+                setLoginStateSource(data.loginStateSource || 'none')
                 setCheckingLogin(false)
               }
             } catch (error) {
@@ -176,6 +182,23 @@ export default function ZhilianPage() {
     }
   }
 
+  const handleOpenLogin = async () => {
+    try {
+      setOpeningLogin(true)
+      const response = await fetch('http://localhost:8888/api/zhilian/login', { method: 'POST' })
+      const data = await response.json()
+      if (data.loginStateSource) setLoginStateSource(data.loginStateSource)
+      if (!data.success) {
+        console.warn('打开智联登录失败：', data.message)
+      }
+    } catch (error) {
+      console.error('Failed to open Zhilian login:', error)
+    } finally {
+      setOpeningLogin(false)
+      setCheckingLogin(false)
+    }
+  }
+
   const handleStopDelivery = async () => {
     try {
       const response = await fetch('http://localhost:8888/api/zhilian/stop', { method: 'POST' })
@@ -199,7 +222,17 @@ export default function ZhilianPage() {
 
   const handleSaveConfig = async () => {
     try {
-      const payload = { ...config, keywords: serializeKeywordsForDb(config.keywords) }
+      const persistedConfig = { ...config } as ZhilianConfig & {
+        minActionDelayMs?: number
+        maxActionDelayMs?: number
+        pauseEveryDeliveries?: number
+        pauseSeconds?: number
+      }
+      delete persistedConfig.minActionDelayMs
+      delete persistedConfig.maxActionDelayMs
+      delete persistedConfig.pauseEveryDeliveries
+      delete persistedConfig.pauseSeconds
+      const payload = { ...persistedConfig, keywords: serializeKeywordsForDb(config.keywords) }
       const response = await fetch('http://localhost:8888/api/zhilian/config', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -238,8 +271,8 @@ export default function ZhilianPage() {
                 <BiPlay className="mr-1" /> 检查登录中...
               </Button>
             ) : !isLoggedIn ? (
-              <Button size="sm" disabled className="rounded-full bg-gray-300 text-gray-600 cursor-not-allowed px-4 shadow">
-                <BiPlay className="mr-1" /> 请先登录智联招聘
+              <Button onClick={handleOpenLogin} size="sm" disabled={openingLogin} className="rounded-full bg-gradient-to-r from-sky-500 to-cyan-500 hover:from-sky-600 hover:to-cyan-600 text-white px-4 shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-105 disabled:opacity-60 disabled:hover:scale-100">
+                <BiLogIn className="mr-1" /> {openingLogin ? '打开中...' : '打开智联登录'}
               </Button>
             ) : isDelivering ? (
               <Button onClick={handleStopDelivery} size="sm" className="rounded-full bg-gradient-to-r from-red-500 to-rose-600 hover:from-red-600 hover:to-rose-700 text-white px-4 shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-105">
@@ -287,6 +320,7 @@ export default function ZhilianPage() {
             config={config}
             onChange={(patch) => setConfig((prev) => ({ ...prev, ...patch }))}
             showSimilarJobs
+            loginStateSource={loginStateSource}
           />
 
           {/* 配置表单 */}

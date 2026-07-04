@@ -5,8 +5,6 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.stereotype.Component;
-import org.springframework.beans.factory.annotation.Autowired;
-import com.getjobs.worker.manager.PlaywrightManager;
 
 import java.io.IOException;
 import java.net.HttpURLConnection;
@@ -27,9 +25,6 @@ public class StartupRunner implements ApplicationRunner {
     private static final String FRONTEND_URL = "http://localhost:" + FRONTEND_PORT;
     private static final String BACKEND_URL = "http://localhost:";
 
-    @Autowired
-    private PlaywrightManager playwrightManager;
-
     @Override
     public void run(ApplicationArguments args) throws Exception {
         String urlToOpen = determineUrlToOpen();
@@ -38,14 +33,7 @@ public class StartupRunner implements ApplicationRunner {
         } else {
             log.info("未找到可用的管理页面，跳过自动打开浏览器");
         }
-
-        // 在尝试打开管理页面之后，初始化 Playwright（满足“先打开管理页，再实例化”）
-        try {
-            playwrightManager.init();
-        } catch (Exception e) {
-            log.error("Playwright 初始化失败: {}", e.getMessage());
-            throw e;
-        }
+        log.info("Playwright 已切换为按需初始化：启动应用不会自动打开招聘平台页面");
     }
 
     /**

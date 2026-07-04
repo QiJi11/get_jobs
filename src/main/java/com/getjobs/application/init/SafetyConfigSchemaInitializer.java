@@ -32,6 +32,15 @@ public class SafetyConfigSchemaInitializer {
             ensureCommonColumns(connection, "job51_config");
             ensureCommonColumns(connection, "zhilian_config");
             ensureColumn(connection, "zhilian_config", "allow_similar_jobs", "INTEGER DEFAULT 0", "0");
+            ensureColumn(connection, "boss_config", "browser_profile_mode", "TEXT DEFAULT 'persistent_profile'", "'persistent_profile'");
+            ensureColumn(connection, "boss_config", "min_action_delay_ms", "INTEGER DEFAULT 2500", "2500");
+            ensureColumn(connection, "boss_config", "max_action_delay_ms", "INTEGER DEFAULT 6500", "6500");
+            ensureColumn(connection, "boss_config", "pause_every_deliveries", "INTEGER DEFAULT 1", "1");
+            ensureColumn(connection, "boss_config", "pause_seconds", "INTEGER DEFAULT 20", "20");
+            ensureColumn(connection, "liepin_config", "browser_profile_mode", "TEXT DEFAULT 'cookie_db'", "'cookie_db'");
+            ensureColumn(connection, "job51_config", "browser_profile_mode", "TEXT DEFAULT 'cookie_db'", "'cookie_db'");
+            ensureColumn(connection, "zhilian_config", "browser_profile_mode", "TEXT DEFAULT 'cookie_db'", "'cookie_db'");
+            ensureFilterTemplateTable(connection);
         } catch (Exception e) {
             log.warn("补齐投递安全配置列失败: {}", e.getMessage());
         }
@@ -86,6 +95,28 @@ public class SafetyConfigSchemaInitializer {
                 log.info("已为 {} 补齐安全列 {}", table, column);
             }
             statement.executeUpdate("UPDATE " + table + " SET " + column + " = " + defaultValue + " WHERE " + column + " IS NULL");
+        }
+    }
+
+    private void ensureFilterTemplateTable(Connection connection) throws Exception {
+        try (Statement statement = connection.createStatement()) {
+            statement.execute("""
+                    CREATE TABLE IF NOT EXISTS filter_template (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        name TEXT,
+                        keywords TEXT,
+                        city TEXT,
+                        salary TEXT,
+                        degree TEXT,
+                        experience TEXT,
+                        company_scale TEXT,
+                        industry TEXT,
+                        job_exclude_words TEXT,
+                        company_blacklist TEXT,
+                        created_at TEXT,
+                        updated_at TEXT
+                    )
+                    """);
         }
     }
 

@@ -42,6 +42,7 @@ public class BossJobService implements JobPlatformService {
         }
 
         try {
+            playwrightManager.initPlatform(PLATFORM);
             // 获取Boss页面实例
             Page page = playwrightManager.getBossPage();
             if (page == null) {

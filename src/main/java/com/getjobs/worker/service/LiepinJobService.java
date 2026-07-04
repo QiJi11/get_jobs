@@ -46,6 +46,7 @@ public class LiepinJobService implements JobPlatformService {
         }
 
         try {
+            playwrightManager.initPlatform(PLATFORM);
             Page page = playwrightManager.getLiepinPage();
             if (page == null) {
                 progressCallback.accept(JobProgressMessage.error(PLATFORM, "猎聘页面未初始化"));

@@ -45,6 +45,31 @@ public class BossConfig {
     private Boolean stopOnRiskText = true;
 
     /**
+     * 登录态来源：persistent_profile 或 cookie_db。
+     */
+    private String browserProfileMode = "persistent_profile";
+
+    /**
+     * Boss真实动作最小随机等待毫秒。
+     */
+    private Integer minActionDelayMs = 2500;
+
+    /**
+     * Boss真实动作最大随机等待毫秒。
+     */
+    private Integer maxActionDelayMs = 6500;
+
+    /**
+     * 每完成多少次真实动作后暂停。
+     */
+    private Integer pauseEveryDeliveries = 1;
+
+    /**
+     * 暂停秒数。
+     */
+    private Integer pauseSeconds = 20;
+
+    /**
      * 搜索关键词列表
      */
     private List<String> keywords;

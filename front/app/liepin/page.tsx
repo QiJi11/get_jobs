@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import { createSSEWithBackoff } from '@/lib/sse'
-import { BiSearch, BiSave, BiMoney, BiPlay, BiStop, BiLogOut, BiBriefcase } from 'react-icons/bi'
+import { BiSearch, BiSave, BiMoney, BiPlay, BiStop, BiLogOut, BiBriefcase, BiLogIn } from 'react-icons/bi'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -22,6 +22,7 @@ interface LiepinConfig {
   maxDeliveries?: number
   stopOnCaptcha?: boolean
   stopOnRiskText?: boolean
+  browserProfileMode?: string
 }
 
 interface LiepinOption {
@@ -44,6 +45,7 @@ export default function LiepinPage() {
     maxDeliveries: 1,
     stopOnCaptcha: true,
     stopOnRiskText: true,
+    browserProfileMode: 'cookie_db',
   })
   const [options, setOptions] = useState<LiepinOptions>({
     city: [],
@@ -54,7 +56,9 @@ export default function LiepinPage() {
   const [isCustomCity, setIsCustomCity] = useState(false) // 是否手动输入城市
   const [isLoggedIn, setIsLoggedIn] = useState(false)
   const [isDelivering, setIsDelivering] = useState(false)
+  const [openingLogin, setOpeningLogin] = useState(false)
   const [checkingLogin, setCheckingLogin] = useState(true)
+  const [loginStateSource, setLoginStateSource] = useState('none')
   const [showLogoutDialog, setShowLogoutDialog] = useState(false)
   const [showLogoutResultDialog, setShowLogoutResultDialog] = useState(false)
   const [logoutResult, setLogoutResult] = useState<{ success: boolean; message: string } | null>(null)
@@ -81,6 +85,7 @@ export default function LiepinPage() {
             try {
               const data = JSON.parse(event.data)
               setIsLoggedIn(data.liepinLoggedIn || false)
+              setLoginStateSource(data.loginStateSources?.liepin || 'none')
               setCheckingLogin(false)
             } catch (error) {
               console.error('[SSE] 解析连接消息失败:', error)
@@ -94,6 +99,7 @@ export default function LiepinPage() {
               const data = JSON.parse(event.data)
               if (data.platform === 'liepin') {
                 setIsLoggedIn(data.isLoggedIn)
+                setLoginStateSource(data.loginStateSource || 'none')
                 setCheckingLogin(false)
               }
             } catch (error) {
@@ -166,7 +172,17 @@ export default function LiepinPage() {
 
   const handleSave = async () => {
     try {
-      const payload = { ...config, keywords: serializeKeywordsForDb(config.keywords) }
+      const persistedConfig = { ...config } as LiepinConfig & {
+        minActionDelayMs?: number
+        maxActionDelayMs?: number
+        pauseEveryDeliveries?: number
+        pauseSeconds?: number
+      }
+      delete persistedConfig.minActionDelayMs
+      delete persistedConfig.maxActionDelayMs
+      delete persistedConfig.pauseEveryDeliveries
+      delete persistedConfig.pauseSeconds
+      const payload = { ...persistedConfig, keywords: serializeKeywordsForDb(config.keywords) }
       const response = await fetch('http://localhost:8888/api/liepin/config', {
         method: 'PUT',
         headers: {
@@ -217,6 +233,23 @@ export default function LiepinPage() {
       console.error('Failed to start delivery:', error)
       // 启动失败：不弹框
       setIsDelivering(false)
+    }
+  }
+
+  const handleOpenLogin = async () => {
+    try {
+      setOpeningLogin(true)
+      const response = await fetch('http://localhost:8888/api/liepin/login', { method: 'POST' })
+      const data = await response.json()
+      if (data.loginStateSource) setLoginStateSource(data.loginStateSource)
+      if (!data.success) {
+        console.warn('打开猎聘登录失败：', data.message)
+      }
+    } catch (error) {
+      console.error('Failed to open Liepin login:', error)
+    } finally {
+      setOpeningLogin(false)
+      setCheckingLogin(false)
     }
   }
 
@@ -284,8 +317,8 @@ export default function LiepinPage() {
                 <BiPlay className="mr-1" /> 检查登录中...
               </Button>
             ) : !isLoggedIn ? (
-              <Button size="sm" disabled className="rounded-full bg-gray-300 text-gray-600 cursor-not-allowed px-4 shadow">
-                <BiPlay className="mr-1" /> 请先登录猎聘
+              <Button onClick={handleOpenLogin} size="sm" disabled={openingLogin} className="rounded-full bg-gradient-to-r from-sky-500 to-cyan-500 hover:from-sky-600 hover:to-cyan-600 text-white px-4 shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-105 disabled:opacity-60 disabled:hover:scale-100">
+                <BiLogIn className="mr-1" /> {openingLogin ? '打开中...' : '打开猎聘登录'}
               </Button>
             ) : isDelivering ? (
               <Button onClick={handleStopDelivery} size="sm" className="rounded-full bg-gradient-to-r from-red-500 to-rose-600 hover:from-red-600 hover:to-rose-700 text-white px-4 shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-105">
@@ -334,6 +367,7 @@ export default function LiepinPage() {
         <SafetyControls
           config={config}
           onChange={(patch) => setConfig((prev) => ({ ...prev, ...patch }))}
+          loginStateSource={loginStateSource}
         />
 
         {/* 搜索配置 */}

@@ -237,6 +237,7 @@ public class Job51Service {
             toInsert.setMaxDeliveries(incoming.getMaxDeliveries());
             toInsert.setStopOnCaptcha(incoming.getStopOnCaptcha());
             toInsert.setStopOnRiskText(incoming.getStopOnRiskText());
+            toInsert.setBrowserProfileMode(incoming.getBrowserProfileMode());
             applySafetyDefaults(toInsert);
             toInsert.setCreatedAt(now);
             toInsert.setUpdatedAt(now);
@@ -253,6 +254,7 @@ public class Job51Service {
             if (incoming.getMaxDeliveries() != null) toUpdate.setMaxDeliveries(incoming.getMaxDeliveries());
             if (incoming.getStopOnCaptcha() != null) toUpdate.setStopOnCaptcha(incoming.getStopOnCaptcha());
             if (incoming.getStopOnRiskText() != null) toUpdate.setStopOnRiskText(incoming.getStopOnRiskText());
+            if (incoming.getBrowserProfileMode() != null) toUpdate.setBrowserProfileMode(incoming.getBrowserProfileMode());
             applySafetyDefaults(toUpdate);
             toUpdate.setCreatedAt(first.getCreatedAt());
             toUpdate.setUpdatedAt(now);
@@ -267,6 +269,9 @@ public class Job51Service {
         if (config.getMaxDeliveries() == null || config.getMaxDeliveries() < 1) config.setMaxDeliveries(1);
         if (config.getStopOnCaptcha() == null) config.setStopOnCaptcha(true);
         if (config.getStopOnRiskText() == null) config.setStopOnRiskText(true);
+        if (!"persistent_profile".equals(config.getBrowserProfileMode()) && !"cookie_db".equals(config.getBrowserProfileMode())) {
+            config.setBrowserProfileMode("cookie_db");
+        }
     }
 
     // ==================== 51job 岗位数据表与持久化 ====================

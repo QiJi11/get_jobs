@@ -121,7 +121,13 @@ public class JobController {
                             "bossLoggedIn", bossLoggedIn,
                             "liepinLoggedIn", liepinLoggedIn,
                             "job51LoggedIn", job51LoggedIn,
-                            "zhilianLoggedIn", zhilianLoggedIn
+                            "zhilianLoggedIn", zhilianLoggedIn,
+                            "loginStateSources", Map.of(
+                                    "boss", playwrightManager.getLoginStateSource("boss"),
+                                    "liepin", playwrightManager.getLoginStateSource("liepin"),
+                                    "51job", playwrightManager.getLoginStateSource("51job"),
+                                    "zhilian", playwrightManager.getLoginStateSource("zhilian")
+                            )
                     )));
         } catch (IOException e) {
             log.error("发送SSE连接消息失败", e);
@@ -162,7 +168,8 @@ public class JobController {
                         .data(objectMapper.writeValueAsString(Map.of(
                                 "platform", change.platform(),
                                 "isLoggedIn", change.isLoggedIn(),
-                                "timestamp", change.timestamp()
+                                "timestamp", change.timestamp(),
+                                "loginStateSource", change.loginStateSource()
                         ))));
             } catch (Exception e) {
                 if (e instanceof AsyncRequestNotUsableException ||
@@ -384,6 +391,7 @@ public class JobController {
     public ResponseEntity<Map<String, Object>> start51jobJob() {
         Map<String, Object> response = new HashMap<>();
         try {
+            playwrightManager.initPlatform("51job");
             if (!playwrightManager.isLoggedIn("51job")) {
                 response.put("success", false);
                 response.put("message", "请先登录51job");

@@ -138,6 +138,7 @@ public class ZhilianService {
             toInsert.setStopOnCaptcha(incoming.getStopOnCaptcha());
             toInsert.setStopOnRiskText(incoming.getStopOnRiskText());
             toInsert.setAllowSimilarJobs(incoming.getAllowSimilarJobs());
+            toInsert.setBrowserProfileMode(incoming.getBrowserProfileMode());
             applySafetyDefaults(toInsert);
             toInsert.setCreatedAt(now);
             toInsert.setUpdatedAt(now);
@@ -154,6 +155,7 @@ public class ZhilianService {
             if (incoming.getStopOnCaptcha() != null) toUpdate.setStopOnCaptcha(incoming.getStopOnCaptcha());
             if (incoming.getStopOnRiskText() != null) toUpdate.setStopOnRiskText(incoming.getStopOnRiskText());
             if (incoming.getAllowSimilarJobs() != null) toUpdate.setAllowSimilarJobs(incoming.getAllowSimilarJobs());
+            if (incoming.getBrowserProfileMode() != null) toUpdate.setBrowserProfileMode(incoming.getBrowserProfileMode());
             applySafetyDefaults(toUpdate);
             toUpdate.setCreatedAt(first.getCreatedAt());
             toUpdate.setUpdatedAt(now);
@@ -169,6 +171,9 @@ public class ZhilianService {
         if (config.getStopOnCaptcha() == null) config.setStopOnCaptcha(true);
         if (config.getStopOnRiskText() == null) config.setStopOnRiskText(true);
         if (config.getAllowSimilarJobs() == null) config.setAllowSimilarJobs(false);
+        if (!"persistent_profile".equals(config.getBrowserProfileMode()) && !"cookie_db".equals(config.getBrowserProfileMode())) {
+            config.setBrowserProfileMode("cookie_db");
+        }
     }
 
     // ========== Option 辅助 ==========

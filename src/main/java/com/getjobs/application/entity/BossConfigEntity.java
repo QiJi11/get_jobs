@@ -23,6 +23,16 @@ public class BossConfigEntity {
     private Boolean stopOnCaptcha;
     /** 命中风控或频控文本时停止任务 */
     private Boolean stopOnRiskText;
+    /** 登录态来源：persistent_profile 或 cookie_db */
+    private String browserProfileMode;
+    /** Boss真实动作最小随机等待毫秒 */
+    private Integer minActionDelayMs;
+    /** Boss真实动作最大随机等待毫秒 */
+    private Integer maxActionDelayMs;
+    /** 每完成多少次真实动作后暂停 */
+    private Integer pauseEveryDeliveries;
+    /** 暂停秒数 */
+    private Integer pauseSeconds;
     /** 页面操作等待时间（秒） */
     private Integer waitTime;
     /** 搜索关键词（逗号或括号列表，例如 "[Java,后端]" 或 "Java,后端"） */

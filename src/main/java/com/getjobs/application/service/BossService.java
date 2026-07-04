@@ -233,6 +233,11 @@ public class BossService {
         if (partial.getMaxDeliveries() != null) existing.setMaxDeliveries(partial.getMaxDeliveries());
         if (partial.getStopOnCaptcha() != null) existing.setStopOnCaptcha(partial.getStopOnCaptcha());
         if (partial.getStopOnRiskText() != null) existing.setStopOnRiskText(partial.getStopOnRiskText());
+        if (partial.getBrowserProfileMode() != null) existing.setBrowserProfileMode(partial.getBrowserProfileMode());
+        if (partial.getMinActionDelayMs() != null) existing.setMinActionDelayMs(partial.getMinActionDelayMs());
+        if (partial.getMaxActionDelayMs() != null) existing.setMaxActionDelayMs(partial.getMaxActionDelayMs());
+        if (partial.getPauseEveryDeliveries() != null) existing.setPauseEveryDeliveries(partial.getPauseEveryDeliveries());
+        if (partial.getPauseSeconds() != null) existing.setPauseSeconds(partial.getPauseSeconds());
         if (partial.getEnableAi() != null) existing.setEnableAi(partial.getEnableAi());
         if (partial.getFilterDeadHr() != null) existing.setFilterDeadHr(partial.getFilterDeadHr());
         if (partial.getSendImgResume() != null) existing.setSendImgResume(partial.getSendImgResume());
@@ -287,9 +292,15 @@ public class BossService {
         boolean dryRun = entity.getDryRun() != null ? entity.getDryRun() : entity.getDebugger() != null && entity.getDebugger() == 1;
         config.setDryRun(dryRun);
         config.setDebugger(dryRun);
-        config.setMaxDeliveries(entity.getMaxDeliveries() != null ? entity.getMaxDeliveries() : 1);
+        int maxDeliveries = entity.getMaxDeliveries() != null ? entity.getMaxDeliveries() : 1;
+        config.setMaxDeliveries(!dryRun && maxDeliveries > 1 ? 1 : Math.max(1, maxDeliveries));
         config.setStopOnCaptcha(entity.getStopOnCaptcha() == null || entity.getStopOnCaptcha());
         config.setStopOnRiskText(entity.getStopOnRiskText() == null || entity.getStopOnRiskText());
+        config.setBrowserProfileMode(normalizeProfileMode(entity.getBrowserProfileMode(), true));
+        config.setMinActionDelayMs(safeMinActionDelay(entity.getMinActionDelayMs()));
+        config.setMaxActionDelayMs(safeMaxActionDelay(entity.getMaxActionDelayMs(), config.getMinActionDelayMs()));
+        config.setPauseEveryDeliveries(entity.getPauseEveryDeliveries() != null && entity.getPauseEveryDeliveries() > 0 ? entity.getPauseEveryDeliveries() : 1);
+        config.setPauseSeconds(entity.getPauseSeconds() != null && entity.getPauseSeconds() >= 0 ? entity.getPauseSeconds() : 20);
         config.setEnableAI(entity.getEnableAi() != null && entity.getEnableAi() == 1);
         config.setFilterDeadHR(entity.getFilterDeadHr() != null && entity.getFilterDeadHr() == 1);
         config.setSendImgResume(entity.getSendImgResume() != null && entity.getSendImgResume() == 1);
@@ -348,8 +359,36 @@ public class BossService {
         }
         config.setDebugger(config.getDryRun() ? 1 : 0);
         if (config.getMaxDeliveries() == null || config.getMaxDeliveries() < 1) config.setMaxDeliveries(1);
+        if (Boolean.FALSE.equals(config.getDryRun()) && config.getMaxDeliveries() > 1) config.setMaxDeliveries(1);
         if (config.getStopOnCaptcha() == null) config.setStopOnCaptcha(true);
         if (config.getStopOnRiskText() == null) config.setStopOnRiskText(true);
+        config.setBrowserProfileMode(normalizeProfileMode(config.getBrowserProfileMode(), true));
+        config.setMinActionDelayMs(safeMinActionDelay(config.getMinActionDelayMs()));
+        config.setMaxActionDelayMs(safeMaxActionDelay(config.getMaxActionDelayMs(), config.getMinActionDelayMs()));
+        if (config.getPauseEveryDeliveries() == null || config.getPauseEveryDeliveries() < 1) config.setPauseEveryDeliveries(1);
+        if (config.getPauseSeconds() == null || config.getPauseSeconds() < 0) config.setPauseSeconds(20);
+    }
+
+    private String normalizeProfileMode(String mode, boolean bossDefaultPersistent) {
+        if ("persistent_profile".equals(mode) || "cookie_db".equals(mode)) {
+            return mode;
+        }
+        return bossDefaultPersistent ? "persistent_profile" : "cookie_db";
+    }
+
+    private Integer safeMinActionDelay(Integer value) {
+        if (value == null || value < 1000) {
+            return 2500;
+        }
+        return value;
+    }
+
+    private Integer safeMaxActionDelay(Integer value, Integer minValue) {
+        int min = minValue == null ? 2500 : minValue;
+        if (value == null || value < min) {
+            return Math.max(min, 6500);
+        }
+        return value;
     }
 
     /**
