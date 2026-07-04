@@ -19,7 +19,7 @@ export default function EnvConfig() {
 
   const [showApiKey, setShowApiKey] = useState(false)
   const [loading, setLoading] = useState(true)
-  const [saving, setSaving] = useState(false)
+  const [, setSaving] = useState(false)
   const [showSaveDialog, setShowSaveDialog] = useState(false)
   const [saveResult, setSaveResult] = useState<{ success: boolean; message: string } | null>(null)
 

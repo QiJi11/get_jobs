@@ -47,7 +47,6 @@ export default function AiConfigPage() {
     } catch (error) {
       console.error('加载AI配置失败:', error)
       // 如果加载失败，使用默认值，不影响用户使用
-      console.log('使用默认配置')
     }
   }
 

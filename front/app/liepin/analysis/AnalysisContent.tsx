@@ -78,6 +78,27 @@ const CATEGORY_COLORS = [
   "#64748b",
 ]
 
+type ChartKind = "pie" | "bar" | "line"
+type ChartDataset = {
+  label: string
+  data: number[]
+  backgroundColor: string | string[]
+  borderColor?: string | string[]
+  fill?: boolean
+  pointBackgroundColor?: string
+  pointBorderColor?: string
+}
+type ChartConfig = {
+  type: ChartKind
+  data: { labels: string[]; datasets: ChartDataset[] }
+  options: Record<string, unknown>
+}
+type ChartInstance = { destroy: () => void }
+type ChartConstructor = new (ctx: CanvasRenderingContext2D, config: ChartConfig) => ChartInstance
+type ChartWindow = Window & typeof globalThis & { Chart?: ChartConstructor }
+
+const getChartConstructor = () => (typeof window === "undefined" ? undefined : (window as ChartWindow).Chart)
+
 function ChartCanvas({
   type,
   labels,
@@ -94,15 +115,20 @@ function ChartCanvas({
   colors?: string[]
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
-  const chartRef = useRef<any | null>(null)
+  const chartRef = useRef<ChartInstance | null>(null)
   const toSolid = (hex: string) => hex
 
-  async function ensureChart(): Promise<any> {
-    if (typeof window !== "undefined" && (window as any).Chart) return (window as any).Chart
+  async function ensureChart(): Promise<ChartConstructor> {
+    const existingChart = getChartConstructor()
+    if (existingChart) return existingChart
     return new Promise((resolve, reject) => {
       const existing = document.querySelector("script[data-chartjs-cdn='true']") as HTMLScriptElement | null
       if (existing) {
-        existing.addEventListener("load", () => resolve((window as any).Chart))
+        existing.addEventListener("load", () => {
+          const loadedChart = getChartConstructor()
+          if (loadedChart) resolve(loadedChart)
+          else reject(new Error("Chart.js global is unavailable"))
+        })
         existing.addEventListener("error", () => reject(new Error("Chart.js CDN load error")))
         return
       }
@@ -110,7 +136,11 @@ function ChartCanvas({
       script.src = "https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"
       script.async = true
       script.setAttribute("data-chartjs-cdn", "true")
-      script.addEventListener("load", () => resolve((window as any).Chart))
+      script.addEventListener("load", () => {
+        const loadedChart = getChartConstructor()
+        if (loadedChart) resolve(loadedChart)
+        else reject(new Error("Chart.js global is unavailable"))
+      })
       script.addEventListener("error", () => reject(new Error("Chart.js CDN load error")))
       document.head.appendChild(script)
     })
@@ -157,7 +187,7 @@ function ChartCanvas({
       return color
     })()
 
-    const dataset: any = {
+    const dataset: ChartDataset = {
       label: title || "",
       data,
       backgroundColor,
@@ -206,7 +236,7 @@ function ChartCanvas({
 
 export default function AnalysisContent({ showHeader = false }: { showHeader?: boolean }) {
   const [stats, setStats] = useState<StatsResponse | null>(null)
-  const [loadingStats, setLoadingStats] = useState(true)
+  const [, setLoadingStats] = useState(true)
 
   const [items, setItems] = useState<LiepinJob[]>([])
   const [total, setTotal] = useState(0)
@@ -231,6 +261,7 @@ export default function AnalysisContent({ showHeader = false }: { showHeader?: b
 
   useEffect(() => {
     loadStats()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   useEffect(() => { setInputPage(page) }, [page])
@@ -297,6 +328,8 @@ export default function AnalysisContent({ showHeader = false }: { showHeader?: b
     }
   }
 
+  // 初次加载列表；后续翻页和筛选保持现有手动触发。
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { loadList(1, size) }, [])
 
   const exportCSV = async () => {

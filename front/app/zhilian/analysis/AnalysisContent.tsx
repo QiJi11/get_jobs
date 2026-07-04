@@ -4,10 +4,9 @@ import { useEffect, useMemo, useRef, useState } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Select } from "@/components/ui/select"
 import { Label } from "@/components/ui/label"
 import PageHeader from "@/app/components/PageHeader"
-import { BiRefresh, BiDownload, BiBarChart, BiLineChart, BiPieChart, BiBriefcase } from "react-icons/bi"
+import { BiRefresh, BiDownload, BiBarChart, BiLineChart, BiBriefcase } from "react-icons/bi"
 import { parseSalary } from "@/lib/salary"
 
 type NameValue = { name: string; value: number }
@@ -72,6 +71,27 @@ const CATEGORY_COLORS = [
   "#64748b",
 ]
 
+type ChartKind = "pie" | "bar" | "line"
+type ChartDataset = {
+  label: string
+  data: number[]
+  backgroundColor: string | string[]
+  borderColor?: string | string[]
+  fill?: boolean
+  pointBackgroundColor?: string
+  pointBorderColor?: string
+}
+type ChartConfig = {
+  type: ChartKind
+  data: { labels: string[]; datasets: ChartDataset[] }
+  options: Record<string, unknown>
+}
+type ChartInstance = { destroy: () => void }
+type ChartConstructor = new (ctx: CanvasRenderingContext2D, config: ChartConfig) => ChartInstance
+type ChartWindow = Window & typeof globalThis & { Chart?: ChartConstructor }
+
+const getChartConstructor = () => (typeof window === "undefined" ? undefined : (window as ChartWindow).Chart)
+
 function ChartCanvas({
   type,
   labels,
@@ -88,15 +108,20 @@ function ChartCanvas({
   colors?: string[]
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
-  const chartRef = useRef<any | null>(null)
+  const chartRef = useRef<ChartInstance | null>(null)
   const toSolid = (hex: string) => hex
 
-  async function ensureChart(): Promise<any> {
-    if (typeof window !== "undefined" && (window as any).Chart) return (window as any).Chart
+  async function ensureChart(): Promise<ChartConstructor> {
+    const existingChart = getChartConstructor()
+    if (existingChart) return existingChart
     return new Promise((resolve, reject) => {
       const existing = document.querySelector("script[data-chartjs-cdn='true']") as HTMLScriptElement | null
       if (existing) {
-        existing.addEventListener("load", () => resolve((window as any).Chart))
+        existing.addEventListener("load", () => {
+          const loadedChart = getChartConstructor()
+          if (loadedChart) resolve(loadedChart)
+          else reject(new Error("Chart.js global is unavailable"))
+        })
         existing.addEventListener("error", () => reject(new Error("Chart.js CDN load error")))
         return
       }
@@ -104,7 +129,11 @@ function ChartCanvas({
       script.src = "https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"
       script.async = true
       script.setAttribute("data-chartjs-cdn", "true")
-      script.addEventListener("load", () => resolve((window as any).Chart))
+      script.addEventListener("load", () => {
+        const loadedChart = getChartConstructor()
+        if (loadedChart) resolve(loadedChart)
+        else reject(new Error("Chart.js global is unavailable"))
+      })
       script.addEventListener("error", () => reject(new Error("Chart.js CDN load error")))
       document.head.appendChild(script)
     })
@@ -151,7 +180,7 @@ function ChartCanvas({
       return color
     })()
 
-    const dataset: any = {
+    const dataset: ChartDataset = {
       label: title || "",
       data,
       backgroundColor,
@@ -204,7 +233,7 @@ function formatDateOnly(s?: string) {
     const d = new Date(s)
     if (isNaN(d.getTime())) return s
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`
-  } catch (e) {
+  } catch {
     return s
   }
 }
@@ -241,7 +270,6 @@ export default function AnalysisContent({ showHeader = false }: { showHeader?: b
   const [keyword, setKeyword] = useState<string>("")
 
   const [exporting, setExporting] = useState(false)
-  const [reloading, setReloading] = useState(false)
   const [computedSalaryBuckets, setComputedSalaryBuckets] = useState<BucketValue[]>([])
 
   const statusOptions = ["未投递", "已投递", "已过滤", "投递失败"]
@@ -451,23 +479,7 @@ export default function AnalysisContent({ showHeader = false }: { showHeader?: b
     ]
   }, [stats, items])
 
-  const fallbackSalaryBuckets = useMemo(() => {
-    const ks: number[] = []
-    for (const it of items) {
-      const info = parseSalary(it.salary)
-      if (info && !isNaN(info.medianK)) ks.push(info.medianK)
-    }
-    if (!ks.length) return [] as BucketValue[]
-    const buckets: { key: string; min: number; max: number | null }[] = [
-      { key: "0-10K", min: 0, max: 10 },
-      { key: "10-15K", min: 10, max: 15 },
-      { key: "15-20K", min: 15, max: 20 },
-      { key: "20-25K", min: 20, max: 25 },
-      { key: ">=25K", min: 25, max: null },
-    ]
-    const counts = buckets.map((b) => ks.filter((k) => (b.max == null ? k >= b.min : k >= b.min && k < b.max)).length)
-    return buckets.map((b, i) => ({ bucket: b.key, value: counts[i] }))
-  }, [items])
+  const salaryBucketData = computedSalaryBuckets.length ? computedSalaryBuckets : (stats?.charts.salaryBuckets ?? [])
 
   return (
     <div className="space-y-8">
@@ -630,7 +642,7 @@ export default function AnalysisContent({ showHeader = false }: { showHeader?: b
           </CardHeader>
           <CardContent>
             {stats ? (
-              <ChartCanvas type="line" labels={(computedSalaryBuckets.length ? computedSalaryBuckets : stats.charts.salaryBuckets).map((x) => (x as any).bucket)} data={(computedSalaryBuckets.length ? computedSalaryBuckets : stats.charts.salaryBuckets).map((x) => x.value)} color="#ef4444" />
+              <ChartCanvas type="line" labels={salaryBucketData.map((x) => x.bucket)} data={salaryBucketData.map((x) => x.value)} color="#ef4444" />
             ) : (
               <div className="text-muted-foreground">加载中...</div>
             )}

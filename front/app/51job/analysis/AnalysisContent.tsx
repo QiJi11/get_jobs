@@ -61,16 +61,43 @@ const CATEGORY_COLORS = [
   "#3b82f6","#10b981","#f59e0b","#ef4444","#6366f1","#22c55e","#fb7185","#a78bfa","#f97316","#06b6d4"
 ]
 
+type ChartKind = "pie" | "bar" | "line"
+type ChartDataset = {
+  label: string
+  data: number[]
+  backgroundColor: string | string[]
+  borderColor?: string | string[]
+  fill?: boolean
+  pointBackgroundColor?: string
+  pointBorderColor?: string
+}
+type ChartConfig = {
+  type: ChartKind
+  data: { labels: string[]; datasets: ChartDataset[] }
+  options: Record<string, unknown>
+}
+type ChartInstance = { destroy: () => void }
+type ChartConstructor = new (ctx: CanvasRenderingContext2D, config: ChartConfig) => ChartInstance
+type ChartWindow = Window & typeof globalThis & { Chart?: ChartConstructor }
+
+const getChartConstructor = () => (typeof window === "undefined" ? undefined : (window as ChartWindow).Chart)
+
 function ChartCanvas({ type, labels, data, title, color = "#3b82f6", colors }:{ type:"pie"|"bar"|"line"; labels:string[]; data:number[]; title?:string; color?:string; colors?:string[] }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
-  const chartRef = useRef<any | null>(null)
+  const chartRef = useRef<ChartInstance | null>(null)
   const toSolid = (hex:string)=>hex
-  async function ensureChart():Promise<any>{
-    if (typeof window !== "undefined" && (window as any).Chart) return (window as any).Chart
+  async function ensureChart():Promise<ChartConstructor>{
+    const existingChart = getChartConstructor()
+    if (existingChart) return existingChart
     return new Promise((resolve,reject)=>{
       const existing = document.querySelector("script[data-chartjs-cdn='true']") as HTMLScriptElement | null
-      if (existing){ existing.addEventListener("load",()=>resolve((window as any).Chart)); existing.addEventListener("error",()=>reject(new Error("Chart.js CDN load error"))); return }
-      const script = document.createElement("script"); script.src = "https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"; script.async = true; script.setAttribute("data-chartjs-cdn","true"); script.addEventListener("load",()=>resolve((window as any).Chart)); script.addEventListener("error",()=>reject(new Error("Chart.js CDN load error"))); document.head.appendChild(script)
+      const resolveLoadedChart = () => {
+        const loadedChart = getChartConstructor()
+        if (loadedChart) resolve(loadedChart)
+        else reject(new Error("Chart.js global is unavailable"))
+      }
+      if (existing){ existing.addEventListener("load", resolveLoadedChart); existing.addEventListener("error",()=>reject(new Error("Chart.js CDN load error"))); return }
+      const script = document.createElement("script"); script.src = "https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"; script.async = true; script.setAttribute("data-chartjs-cdn","true"); script.addEventListener("load", resolveLoadedChart); script.addEventListener("error",()=>reject(new Error("Chart.js CDN load error"))); document.head.appendChild(script)
     })
   }
   useEffect(()=>{
@@ -80,7 +107,7 @@ function ChartCanvas({ type, labels, data, title, color = "#3b82f6", colors }:{ 
     const pieColorsBase=["#3b82f6","#10b981","#f59e0b","#ef4444","#6366f1","#22c55e","#fb7185","#a78bfa","#f97316","#06b6d4"]
     const backgroundColor = (()=>{ if (type==="pie"){ const arr=(colors&&colors.length?colors:pieColorsBase).slice(0,labels.length); return arr } if (type==="bar"&&colors&&colors.length){ return colors.slice(0,data.length).map(c=>toSolid(c)) } return toSolid(color ?? "#3b82f6") })()
     const borderColor = (()=>{ if (type==="pie") return undefined; if (type==="bar"&&colors&&colors.length) return colors.slice(0,data.length); return color })()
-    const dataset:any = { label:title||"", data, backgroundColor, borderColor }
+    const dataset: ChartDataset = { label:title||"", data, backgroundColor, borderColor }
     if (type==="line"){ dataset.fill=false; dataset.pointBackgroundColor=toSolid(color); dataset.pointBorderColor=toSolid(color) }
     ;(async()=>{ try{ const Chart = await ensureChart(); if (cancelled) return; chartRef.current = new Chart(ctx,{ type, data:{ labels, datasets:[dataset] }, options:{ responsive:true, maintainAspectRatio:false, plugins:{ legend:{ display: type==="pie" }, title:{ display:!!title, text:title } }, scales: type!=="pie" ? { x:{ ticks:{ autoSkip:true } }, y:{ beginAtZero:true } } : undefined } }) }catch(e){ console.error("Failed to create chart:",e) } })()
     return ()=>{ cancelled=true; if (chartRef.current){ chartRef.current.destroy(); chartRef.current=null } }
@@ -90,7 +117,7 @@ function ChartCanvas({ type, labels, data, title, color = "#3b82f6", colors }:{ 
 
 export default function AnalysisContent({ showHeader = false }:{ showHeader?: boolean }) {
   const [stats,setStats]=useState<StatsResponse|null>(null)
-  const [loadingStats,setLoadingStats]=useState(true)
+  const [,setLoadingStats]=useState(true)
   const [items,setItems]=useState<Job51Item[]>([])
   const [total,setTotal]=useState(0)
   const [page,setPage]=useState(1)
@@ -111,6 +138,8 @@ export default function AnalysisContent({ showHeader = false }:{ showHeader?: bo
 
   const statusOptions = ["未投递","已投递"]
 
+  // 初次加载统计；筛选后的刷新由“应用筛选”按钮触发。
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(()=>{ loadStats() },[])
   useEffect(()=>{ setInputPage(page) },[page])
   useEffect(()=>{ setInputSize(size) },[size])
@@ -143,10 +172,12 @@ export default function AnalysisContent({ showHeader = false }:{ showHeader?: bo
     try{ setLoadingStats(true); const res = await fetch(`${API_BASE}/api/51job/stats?${params.toString()}`); const data:StatsResponse = await res.json(); setStats(data) }catch(e){ console.error("fetch stats failed",e) } finally { setLoadingStats(false) }
   }
 
+  // 初次加载列表；后续翻页和筛选保持现有手动触发。
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(()=>{ loadList(1,size) },[])
 
   const onReload = async ()=>{
-    try{ setReloading(true); const res=await fetch(`${API_BASE}/api/51job/reload`); const data=await res.json(); console.log("reload",data); await loadList(1,size); await loadStats() }catch(e){ console.error("reload failed",e) } finally { setReloading(false) }
+    try{ setReloading(true); await fetch(`${API_BASE}/api/51job/reload`); await loadList(1,size); await loadStats() }catch(e){ console.error("reload failed",e) } finally { setReloading(false) }
   }
 
   const exportCSV = async ()=>{
