@@ -3,6 +3,9 @@ package com.getjobs.worker.boss;
 import com.getjobs.application.entity.AiEntity;
 import com.getjobs.application.service.AiService;
 import com.getjobs.application.service.BossService;
+import com.getjobs.worker.safety.DeliveryDecision;
+import com.getjobs.worker.safety.DeliveryJobInfo;
+import com.getjobs.worker.safety.DeliverySafety;
 import com.getjobs.worker.utils.Job;
 import com.getjobs.worker.utils.JobUtils;
 import com.getjobs.worker.utils.PlaywrightUtil;
@@ -57,6 +60,7 @@ public class Boss {
     private ProgressCallback progressCallback;
     @Setter
     private Supplier<Boolean> shouldStopCallback;
+    private DeliverySafety safety;
 
     private final List<Job> resultList = new ArrayList<>();
 
@@ -71,6 +75,18 @@ public class Boss {
     // 通过 Lombok @RequiredArgsConstructor 使用构造器注入 bossService 与 aiService
 
     public void prepare() {
+        this.safety = DeliverySafety.create(
+                "boss",
+                config != null ? config.getDryRun() : true,
+                config != null ? config.getMaxDeliveries() : 1,
+                config != null ? config.getStopOnCaptcha() : true,
+                config != null ? config.getStopOnRiskText() : true,
+                message -> {
+                    if (progressCallback != null) {
+                        progressCallback.accept(message, null, null);
+                    }
+                }
+        );
         // 调整 boss_data 表结构：将 encrypt_id、encrypt_user_id 前置
         try { bossService.ensureBossDataColumnOrder(); } catch (Throwable ignore) {}
         // 从数据库加载黑名单
@@ -90,12 +106,12 @@ public class Boss {
      */
     public int execute() {
         for (String cityCode : config.getCityCode()) {
-            if (shouldStopCallback != null && Boolean.TRUE.equals(shouldStopCallback.get())) {
+            if (shouldStop()) {
                 progressCallback.accept("用户取消投递", 0, 0);
                 break;
             }
             postJobByCity(cityCode);
-            if (shouldStopCallback != null && Boolean.TRUE.equals(shouldStopCallback.get())) {
+            if (shouldStop()) {
                 progressCallback.accept("用户取消投递", 0, 0);
                 break;
             }
@@ -208,7 +224,7 @@ public class Boss {
         String searchUrl = getSearchUrl(cityCode);
         for (String keyword : config.getKeywords()) {
             // 检查是否需要停止
-            if (shouldStopCallback.get()) {
+            if (shouldStop()) {
                 progressCallback.accept("用户取消投递", 0, 0);
                 return;
             }
@@ -229,7 +245,7 @@ public class Boss {
             int stableTries = 0;
             for (int i = 0; i < 5000; i++) { // 最多尝试约120次，避免死循环
                 // 停止检查：滚动加载过程中也要及时响应
-                if (shouldStopCallback != null && Boolean.TRUE.equals(shouldStopCallback.get())) {
+                if (shouldStop()) {
                     progressCallback.accept("用户取消投递", 0, 0);
                     return;
                 }
@@ -270,7 +286,7 @@ public class Boss {
             int count = cards.count();
             for (int i = 0; i < count; i++) {
                 // 检查是否需要停止
-                if (shouldStopCallback != null && Boolean.TRUE.equals(shouldStopCallback.get())) {
+                if (shouldStop()) {
                     progressCallback.accept("用户取消投递", i, count);
                     return;
                 }
@@ -611,13 +627,8 @@ public class Boss {
     @SneakyThrows
     private void resumeSubmission(String keyword, Job job) {
         // 若收到停止指令，直接短路返回
-        if (shouldStopCallback != null && Boolean.TRUE.equals(shouldStopCallback.get())) {
+        if (shouldStop()) {
             log.info("停止指令已触发，跳过投递 | 公司：{} | 岗位：{}", job.getCompanyName(), job.getJobName());
-            return;
-        }
-        // 调试模式：仅遍历不投递
-        if (Boolean.TRUE.equals(config.getDebugger())) {
-            log.info("调试模式：仅遍历岗位，不投递 | 公司：{} | 岗位：{}", job.getCompanyName(), job.getJobName());
             return;
         }
 
@@ -634,6 +645,7 @@ public class Boss {
             return;
         }
         String detailUrl = "https://www.zhipin.com" + href;
+        DeliveryJobInfo safetyJob = DeliveryJobInfo.of(job.getCompanyName(), job.getJobName(), detailUrl);
         // 2. 在新窗口打开详情页
         Page detailPage = page.context().newPage();
         detailPage.navigate(detailUrl);
@@ -643,7 +655,7 @@ public class Boss {
         Locator chatBtn = detailPage.locator("a.btn-startchat, a.op-btn-chat");
         boolean foundChatBtn = false;
         for (int i = 0; i < 5; i++) {
-            if (shouldStopCallback != null && Boolean.TRUE.equals(shouldStopCallback.get())) {
+            if (shouldStop()) {
                 log.info("停止指令已触发，结束查找聊天按钮 | 公司：{} | 岗位：{}", job.getCompanyName(), job.getJobName());
                 try { detailPage.close(); } catch (Exception ignore) {}
                 return;
@@ -663,6 +675,11 @@ public class Boss {
             }
             return;
         }
+        DeliveryDecision chatDecision = safety.canProceed(detailPage, safetyJob, "boss.start-chat");
+        if (!chatDecision.isAllowed()) {
+            try { detailPage.close(); } catch (Exception ignore) {}
+            return;
+        }
         chatBtn.first().click();
         PlaywrightUtil.sleep(1);
 
@@ -670,7 +687,7 @@ public class Boss {
         Locator inputLocator = detailPage.locator("div#chat-input.chat-input[contenteditable='true'], textarea.input-area");
         boolean inputReady = false;
         for (int i = 0; i < 10; i++) {
-            if (shouldStopCallback != null && Boolean.TRUE.equals(shouldStopCallback.get())) {
+            if (shouldStop()) {
                 log.info("停止指令已触发，结束等待聊天输入框 | 公司：{} | 岗位：{}", job.getCompanyName(), job.getJobName());
                 try { detailPage.close(); } catch (Exception ignore) {}
                 return;
@@ -700,6 +717,12 @@ public class Boss {
             }
         }
         String message = isValidString(aiMessage) ? aiMessage : config.getSayHi();
+
+        DeliveryDecision sendDecision = safety.checkRisk(detailPage, safetyJob, "boss.send-message");
+        if (!sendDecision.isAllowed()) {
+            try { detailPage.close(); } catch (Exception ignore) {}
+            return;
+        }
 
         // 6. 输入打招呼语
         Locator input = inputLocator.first();
@@ -759,6 +782,7 @@ public class Boss {
                 log.debug("未能找到 encryptId/encryptUserId 用于更新投递状态，detailUrl: {}", detailUrl);
             }
             resultList.add(job);
+            safety.recordDelivered(safetyJob, "boss.send-message", "message sent");
         } else {
             // 若发生发送失败，也进行状态更新
             String encryptId = extractEncryptId(detailUrl);
@@ -771,7 +795,14 @@ public class Boss {
                     log.warn("更新投递状态为投递失败异常：{}", e.getMessage());
                 }
             }
+            safety.recordFailed(safetyJob, "boss.send-message", "message not sent");
         }
+    }
+
+    private boolean shouldStop() {
+        boolean externalStop = shouldStopCallback != null && Boolean.TRUE.equals(shouldStopCallback.get());
+        boolean safetyStop = safety != null && safety.isStopped();
+        return externalStop || safetyStop;
     }
 
     

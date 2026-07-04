@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { createSSEWithBackoff } from '@/lib/sse'
 import { createPortal } from 'react-dom'
-import { BiBriefcase, BiSave, BiSearch, BiMap, BiMoney, BiBuilding, BiTime, BiBarChart, BiTrash, BiPlus, BiPlay, BiStop, BiLogOut } from 'react-icons/bi'
+import { BiBriefcase, BiSave, BiSearch, BiMoney, BiBuilding, BiTrash, BiPlus, BiPlay, BiStop, BiLogOut } from 'react-icons/bi'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -12,10 +12,15 @@ import { Select } from '@/components/ui/select'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import PageHeader from '@/app/components/PageHeader'
 import AnalysisContent from '@/app/boss/analysis/AnalysisContent'
+import SafetyControls, { getDeliveryModeLabel, withSafetyDefaults } from '@/app/components/SafetyControls'
 
 interface BossConfig {
   id?: number
   debugger?: number
+  dryRun?: boolean
+  maxDeliveries?: number
+  stopOnCaptcha?: boolean
+  stopOnRiskText?: boolean
   waitTime?: number
   keywords?: string
   cityCode?: string
@@ -72,6 +77,10 @@ export default function BossPage() {
     scale: '',
     stage: '',
     filterDeadHr: 0,
+    dryRun: true,
+    maxDeliveries: 1,
+    stopOnCaptcha: true,
+    stopOnRiskText: true,
   })
   // 关键词显示用（无括号无引号，逗号分隔）
   const [keywordsDisplay, setKeywordsDisplay] = useState<string>('')
@@ -116,9 +125,6 @@ export default function BossPage() {
     }
 
     const client = createSSEWithBackoff('http://localhost:8888/api/jobs/login-status/stream', {
-      onOpen: () => {
-        console.log('[SSE] 连接已打开')
-      },
       onError: (e, attempt, delay) => {
         console.warn(`[SSE] 连接错误，准备第${attempt}次重连，延迟 ${delay}ms`, e)
         setCheckingLogin(false)
@@ -157,15 +163,13 @@ export default function BossPage() {
     return () => {
       client.close()
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const fetchAllData = async () => {
     try {
       const response = await fetch('http://localhost:8888/api/boss/config')
       const data = await response.json()
-
-      console.log('Fetched data:', data)
-      console.log('Blacklist:', data.blacklist)
 
       if (data.config) {
         // 规范化城市编码：后端可能返回单值或括号列表，此处取第一个值用于下拉回显
@@ -182,11 +186,11 @@ export default function BossPage() {
           if (list.length > 0) return list[0]
           return raw
         }
-        setConfig({
+        setConfig(withSafetyDefaults({
           ...data.config,
           cityCode: normalizeCityCode(data.config.cityCode),
           jobType: normalizeJobType(data.config.jobType),
-        })
+        }))
         // 将后端存储的关键词（可能是 JSON 数组或括号列表）转为展示用逗号分隔文本
         const toDisplayKeywords = (raw?: string): string => {
           if (!raw) return ''
@@ -198,7 +202,7 @@ export default function BossPage() {
               if (Array.isArray(arr)) {
                 return arr.map((v) => String(v).trim()).filter((v) => v.length > 0).join(', ')
               }
-            } catch (_) {
+            } catch {
               // 非严格 JSON，如 [a,b]，走拆括号与逗号分隔
               const inner = s.slice(1, -1)
               return inner
@@ -221,23 +225,6 @@ export default function BossPage() {
         setSelectedSalary(parseListString(data.config.salary))
       }
       if (data.options) {
-        // 按 sort_order 或固定名称顺序排序；都没有时按名称兜底
-        const CITY_ORDER = [
-          // 顶层：全国 + 一线（北上广深）
-          '全国','北京','上海','广州','深圳',
-          // 准一线（图片顺序，从上到下）
-          '杭州','成都','南京',
-          '武汉','苏州','重庆','天津',
-          '长沙','青岛','宁波','无锡',
-          '西安','郑州','合肥','厦门','东莞',
-          // 二线（图片顺序）
-          '济南','福州','佛山','昆明','大连','沈阳','常州','哈尔滨','南昌','泉州',
-          '南通','烟台','温州','贵阳','南宁','石家庄','长春','嘉兴','珠海','太原',
-          '绍兴','金华','潍坊','徐州','惠州','台州','扬州','中山','乌鲁木齐','兰州',
-          // 省会补充（图片底部出现的省会/直辖市）
-          '海口','呼和浩特','银川'
-        ]
-        const orderMap = new Map<string, number>(CITY_ORDER.map((n, i) => [n, i + 1]))
         // 城市排序：仅在后端提供 sortOrder 时按其排序；否则保留后端返回顺序
         const cityList = data.options.city || []
         const cityHasOrder = cityList.some((o: BossOption) => o.sortOrder != null || o.sort_order != null)
@@ -336,7 +323,6 @@ export default function BossPage() {
           ...item,
           type: item.type === 'boss' ? 'company' : item.type
         }))
-        console.log('Normalized blacklist:', normalizedBlacklist)
         setBlacklist(normalizedBlacklist)
       }
     } catch (error) {
@@ -550,6 +536,9 @@ export default function BossPage() {
         accentBgClass="bg-teal-500"
         actions={
           <div className="flex items-center gap-2">
+            <span className="rounded-full border border-white/30 bg-white/10 px-3 py-1 text-xs text-muted-foreground">
+              {getDeliveryModeLabel(config)}
+            </span>
             {checkingLogin ? (
               <Button size="sm" disabled className="rounded-full bg-gray-300 text-gray-600 cursor-not-allowed px-4 shadow">
                 <BiPlay className="mr-1" /> 检查登录中...
@@ -601,6 +590,11 @@ export default function BossPage() {
               </div>
             </CardContent>
           </Card>
+
+          <SafetyControls
+            config={config}
+            onChange={(patch) => setConfig((prev) => ({ ...prev, ...patch }))}
+          />
 
           {/* 搜索配置 */}
           <Card className="animate-in fade-in slide-in-from-bottom-5 duration-700">
@@ -1020,16 +1014,11 @@ function MultiSelect({
   onClose?: () => void
 }) {
   const [open, setOpen] = useState(false)
-  const [mounted, setMounted] = useState(false)
+  const mounted = typeof document !== 'undefined'
   const wrapperRef = useRef<HTMLDivElement>(null)
   const buttonRef = useRef<HTMLButtonElement>(null)
   const dropdownRef = useRef<HTMLDivElement>(null)
   const [dropdownPosition, setDropdownPosition] = useState({ top: 0, left: 0, width: 0 })
-
-  // 确保组件已挂载（解决 SSR 问题）
-  useEffect(() => {
-    setMounted(true)
-  }, [])
 
   // 计算下拉框位置
   const updatePosition = useCallback(() => {
@@ -1067,31 +1056,19 @@ function MultiSelect({
       const clickedButton = wrapperRef.current?.contains(target)
       const clickedDropdown = dropdownRef.current?.contains(target)
 
-      console.log('[MultiSelect] 外部点击检测', {
-        clickedButton,
-        clickedDropdown,
-        targetElement: (target as HTMLElement)?.tagName,
-        targetClass: (target as HTMLElement)?.className
-      })
-
       if (!clickedButton && !clickedDropdown) {
-        console.log('[MultiSelect] 检测到外部点击，关闭下拉框')
         setOpen(false)
         onClose?.()
-      } else {
-        console.log('[MultiSelect] 点击在组件内部，保持打开')
       }
     }
     const handleEscape = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        console.log('[MultiSelect] ESC 键关闭')
         setOpen(false)
         onClose?.()
       }
     }
 
     if (open) {
-      console.log('[MultiSelect] 下拉框打开，注册监听器')
       // 使用 setTimeout 确保 DOM 已更新
       setTimeout(() => {
         document.addEventListener('mousedown', handleOutsideClick)
@@ -1100,23 +1077,17 @@ function MultiSelect({
     }
 
     return () => {
-      if (open) {
-        console.log('[MultiSelect] 移除监听器')
-      }
       document.removeEventListener('mousedown', handleOutsideClick)
       document.removeEventListener('keydown', handleEscape)
     }
   }, [open, onClose])
 
   const toggle = (code: string) => {
-    console.log('[MultiSelect] toggle 被调用', { code, currentSelected: selected })
     if (selected.includes(code)) {
       const newSelected = selected.filter((c) => c !== code)
-      console.log('[MultiSelect] 取消选择，新值:', newSelected)
       onChange(newSelected)
     } else {
       const newSelected = [...selected, code]
-      console.log('[MultiSelect] 添加选择，新值:', newSelected)
       onChange(newSelected)
     }
   }
@@ -1155,12 +1126,7 @@ function MultiSelect({
                 <div
                   key={opt.id}
                   className={`group inline-flex items-center justify-between gap-3 rounded-full px-3 py-2 cursor-pointer transition-all border ${checked ? 'border-teal-300/60 bg-gradient-to-r from-teal-500/12 to-cyan-500/12 text-teal-900 dark:text-teal-200 shadow' : 'border-white/20 bg-white/8 text-foreground hover:bg-white/12'}`}
-                  onClick={(e) => {
-                    console.log('[MultiSelect] div 被点击', {
-                      optionCode: opt.code,
-                      optionName: opt.name,
-                      currentChecked: checked
-                    })
+                  onClick={() => {
                     toggle(opt.code)
                   }}
                 >

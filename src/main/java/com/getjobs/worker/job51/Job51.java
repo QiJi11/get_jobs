@@ -1,6 +1,10 @@
 package com.getjobs.worker.job51;
 
 import com.getjobs.application.service.Job51Service;
+import com.getjobs.worker.safety.DeliveryActionResult;
+import com.getjobs.worker.safety.DeliveryDecision;
+import com.getjobs.worker.safety.DeliveryJobInfo;
+import com.getjobs.worker.safety.DeliverySafety;
 import com.getjobs.worker.utils.JobUtils;
 import com.getjobs.worker.utils.PlaywrightUtil;
 import com.microsoft.playwright.Locator;
@@ -50,6 +54,8 @@ public class Job51 {
     private int currentPageNum = 0;
     // 当前页从JSON拦截到的jobId列表
     private final java.util.List<Long> currentPageJobIds = new java.util.ArrayList<>();
+    private final java.util.List<DeliveryJobInfo> currentPageSelectedJobs = new java.util.ArrayList<>();
+    private DeliverySafety safety;
 
     private static final int DEFAULT_MAX_PAGE = 50;
     private static final String BASE_URL = "https://we.51job.com/pc/search?";
@@ -67,6 +73,15 @@ public class Job51 {
      */
     public void prepare() {
         resultList.clear();
+        currentPageSelectedJobs.clear();
+        safety = DeliverySafety.create(
+                "51job",
+                config != null ? config.getDryRun() : true,
+                config != null ? config.getMaxDeliveries() : 1,
+                config != null ? config.getStopOnCaptcha() : true,
+                config != null ? config.getStopOnRiskText() : true,
+                message -> sendProgress(message, null, null)
+        );
     }
 
     /**
@@ -232,6 +247,12 @@ public class Job51 {
 
                 // 检查是否出现访问验证
                 if (checkAccessVerification()) {
+                    safety.stopBecauseRisk(
+                            DeliveryJobInfo.of("-", "51job page", page.url()),
+                            "51job.access-verification",
+                            DeliveryActionResult.CAPTCHA_STOPPED,
+                            "access verification detected"
+                    );
                     sendProgress("出现访问验证，停止投递", null, null);
                     return;
                 }
@@ -261,6 +282,14 @@ public class Job51 {
     private void deliverCurrentPage() {
         try {
             PlaywrightUtil.sleep(1);
+            DeliveryJobInfo pageInfo = DeliveryJobInfo.of("-", "51job page", page.url());
+            if (!safety.checkRisk(page, pageInfo, "51job.page-scan").isAllowed()) {
+                return;
+            }
+            if (!safety.isDryRun() && safety.remainingDeliveries() == 0) {
+                safety.stopBecauseLimitReached(pageInfo, "51job.batch-select");
+                return;
+            }
 
             // 查找所有职位的checkbox
             Locator checkboxes = page.locator("div.ick");
@@ -271,24 +300,44 @@ public class Job51 {
             Locator companies = page.locator("[class*='cname text-cut']");
 
             int jobCount = checkboxes.count();
+            currentPageSelectedJobs.clear();
 
-            // 选中所有职位
+            // 按安全额度逐个选择职位，避免整页无条件全选。
             for (int i = 0; i < jobCount; i++) {
                 if (shouldStop()) {
                     return;
                 }
+                if (!safety.isDryRun() && safety.remainingDeliveries() == 0) {
+                    break;
+                }
 
                 try {
-                    Locator checkbox = checkboxes.nth(i);
-                    // 使用JavaScript点击，避免元素被遮挡
-                    checkbox.evaluate("el => el.click()");
-
                     String title = i < titles.count() ? titles.nth(i).textContent() : "未知职位";
                     String company = i < companies.count() ? companies.nth(i).textContent() : "未知公司";
-                    String jobInfo = company + " | " + title;
-                    resultList.add(jobInfo);
-//                    log.info("选中: {}", jobInfo);
+                    Long jobId = getCurrentPageJobId(i);
+                    DeliveryJobInfo jobInfo = DeliveryJobInfo.of(
+                            company,
+                            title,
+                            jobId != null ? String.valueOf(jobId) : page.url()
+                    );
+                    DeliveryDecision decision = safety.canProceed(page, jobInfo, "51job.batch-select");
+                    if (!decision.isAllowed()) {
+                        if (safety.isStopped()) {
+                            return;
+                        }
+                        continue;
+                    }
+
+                    Locator checkbox = checkboxes.nth(i);
+                    // 使用JavaScript点击，避免元素被遮挡。
+                    checkbox.evaluate("el => el.click()");
+
+                    currentPageSelectedJobs.add(jobInfo);
                 } catch (Exception e) { /* 静默 */ }
+            }
+
+            if (safety.isDryRun() || currentPageSelectedJobs.isEmpty()) {
+                return;
             }
 
             PlaywrightUtil.sleep(1);
@@ -307,6 +356,10 @@ public class Job51 {
 
             // 处理单独投递申请弹窗
             handleSeparateDeliveryDialog();
+
+            if (safety.remainingDeliveries() == 0) {
+                safety.stopBecauseLimitReached(pageInfo, "51job.batch-select");
+            }
 
         } catch (Exception e) {
             log.error("投递当前页面失败", e);
@@ -341,6 +394,7 @@ public class Job51 {
                             reachedDailyLimit = true;
                             log.warn("点击投递按钮后，检测到 51job 日投递上限提示，停止投递");
                             sendProgress("检测到日投递上限，任务已停止", null, null);
+                            recordJob51RiskStopped("daily delivery limit toast");
                             return;
                         }
                     }
@@ -406,14 +460,18 @@ public class Job51 {
                                 List<Long> toMark = deliveredIds.subList(0, markCount);
                                 job51Service.markDeliveredBatch(toMark);
                                 log.info("[51job] 标记已投递 {} 个职位", toMark.size());
+                                recordJob51Delivered(markCount);
                             } else {
                                 log.warn("[51job] 当前页没有缓存的jobId，无法标记投递状态");
+                                recordJob51Delivered(successNum);
                             }
                         } catch (Exception e) {
                             log.warn("[51job] 标记投递状态失败: {}", e.getMessage());
+                            recordJob51Failed("mark delivered failed: " + e.getMessage());
                         }
                     } else {
                         log.warn("[51job] 投递成功数量为0或未解析到，不标记投递状态");
+                        recordJob51Failed("success count not parsed");
                     }
 
                     // 优先点击“确定/关闭”按钮，其次点右上角关闭，再次退格键
@@ -466,6 +524,7 @@ public class Job51 {
                 if (detectDailyLimitToast51job()) {
                     reachedDailyLimit = true;
                     log.warn("处理成功弹窗后，检测到 51job 日投递上限提示，停止当前页");
+                    recordJob51RiskStopped("daily delivery limit toast");
                 }
             } catch (Exception ignored) {}
         } catch (Exception e) {
@@ -826,11 +885,46 @@ public class Job51 {
         }
     }
 
+    private Long getCurrentPageJobId(int index) {
+        synchronized (currentPageJobIds) {
+            if (index >= 0 && index < currentPageJobIds.size()) {
+                return currentPageJobIds.get(index);
+            }
+        }
+        return null;
+    }
+
+    private void recordJob51Delivered(int successCount) {
+        int count = Math.min(successCount, currentPageSelectedJobs.size());
+        for (int i = 0; i < count; i++) {
+            DeliveryJobInfo jobInfo = currentPageSelectedJobs.get(i);
+            safety.recordDelivered(jobInfo, "51job.batch-deliver", "success dialog confirmed");
+            resultList.add(jobInfo.getCompany() + " | " + jobInfo.getJobName());
+        }
+        for (int i = count; i < currentPageSelectedJobs.size(); i++) {
+            safety.recordFailed(currentPageSelectedJobs.get(i), "51job.batch-deliver", "not confirmed in success dialog");
+        }
+    }
+
+    private void recordJob51Failed(String reason) {
+        for (DeliveryJobInfo jobInfo : currentPageSelectedJobs) {
+            safety.recordFailed(jobInfo, "51job.batch-deliver", reason);
+        }
+    }
+
+    private void recordJob51RiskStopped(String reason) {
+        for (DeliveryJobInfo jobInfo : currentPageSelectedJobs) {
+            safety.stopBecauseRisk(jobInfo, "51job.batch-deliver", DeliveryActionResult.RISK_STOPPED, reason);
+        }
+    }
+
     /**
      * 检查是否应该停止
      */
     private boolean shouldStop() {
-        return shouldStopCallback != null && shouldStopCallback.get();
+        boolean externalStop = shouldStopCallback != null && shouldStopCallback.get();
+        boolean safetyStop = safety != null && safety.isStopped();
+        return externalStop || safetyStop;
     }
 
     /**

@@ -3,6 +3,9 @@ package com.getjobs.worker.liepin;
 import com.getjobs.worker.utils.PlaywrightUtil;
 import com.getjobs.application.service.LiepinService;
 import com.getjobs.application.entity.LiepinEntity;
+import com.getjobs.worker.safety.DeliveryDecision;
+import com.getjobs.worker.safety.DeliveryJobInfo;
+import com.getjobs.worker.safety.DeliverySafety;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.microsoft.playwright.Locator;
@@ -59,10 +62,19 @@ public class Liepin {
     private ProgressCallback progressCallback;
     @Setter
     private Supplier<Boolean> shouldStopCallback;
+    private DeliverySafety safety;
 
     public void prepare() {
         this.startDate = new Date();
         this.resultList.clear();
+        this.safety = DeliverySafety.create(
+                "liepin",
+                config != null ? config.getDryRun() : true,
+                config != null ? config.getMaxDeliveries() : 1,
+                config != null ? config.getStopOnCaptcha() : true,
+                config != null ? config.getStopOnRiskText() : true,
+                this::info
+        );
 
         // 监控猎聘接口请求与返回，输出被拦截的URL（精确匹配PC搜索相关接口）
         if (page != null && !monitoringRegistered) {
@@ -215,7 +227,9 @@ public class Liepin {
     }
 
     private boolean shouldStop() {
-        return shouldStopCallback != null && Boolean.TRUE.equals(shouldStopCallback.get());
+        boolean externalStop = shouldStopCallback != null && Boolean.TRUE.equals(shouldStopCallback.get());
+        boolean safetyStop = safety != null && safety.isStopped();
+        return externalStop || safetyStop;
     }
 
     private void info(String msg) {
@@ -508,6 +522,18 @@ public class Liepin {
 
             // 检查按钮文本并点击
             if (button != null && buttonText.contains("聊一聊")) {
+                DeliveryJobInfo safetyJob = DeliveryJobInfo.of(
+                        companyName,
+                        jobName,
+                        jobIdForUpdate != null ? String.valueOf(jobIdForUpdate) : page.url()
+                );
+                DeliveryDecision decision = safety.canProceed(page, safetyJob, "liepin.chat");
+                if (!decision.isAllowed()) {
+                    if (safety.isStopped()) {
+                        return;
+                    }
+                    continue;
+                }
                 try {
                     // 在点击按钮前进行鼠标微调，先向右移动2像素，再向左移动2像素
                     try {
@@ -559,19 +585,18 @@ public class Liepin {
                         if (jobIdForUpdate != null) {
                             liepinService.markDelivered(jobIdForUpdate);
                         }
+                        safety.recordDelivered(safetyJob, "liepin.chat", "chat window closed");
                         
                     } catch (Exception e) {
                         log.warn("关闭聊天窗口失败，但投递可能已成功: {}", e.getMessage());
-                        // 即使关闭失败，也认为投递成功
                         resultList.add(sb.append("【").append(companyName).append(" ").append(jobName).append(" ").append(salary).append(" ").append(recruiterName).append(" ").append("】").toString());
                         sb.setLength(0);
-                        if (jobIdForUpdate != null) {
-                            liepinService.markDelivered(jobIdForUpdate);
-                        }
+                        safety.recordPossiblyDelivered(safetyJob, "liepin.chat", "chat close failed: " + e.getMessage());
                     }
                     
                 } catch (Exception e) {
                     log.error("点击按钮失败: {}", e.getMessage());
+                    safety.recordFailed(safetyJob, "liepin.chat", e.getMessage());
                 }
             } else {
                 // 如果按钮是“继续聊”，视为已投递

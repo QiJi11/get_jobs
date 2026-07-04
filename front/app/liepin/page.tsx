@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import { createSSEWithBackoff } from '@/lib/sse'
-import { BiSearch, BiSave, BiTargetLock, BiMap, BiMoney, BiTime, BiBookmark, BiBarChart, BiPlay, BiStop, BiLogOut, BiBriefcase } from 'react-icons/bi'
+import { BiSearch, BiSave, BiMoney, BiPlay, BiStop, BiLogOut, BiBriefcase } from 'react-icons/bi'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -11,12 +11,17 @@ import { Select } from '@/components/ui/select'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import AnalysisContent from '@/app/liepin/analysis/AnalysisContent'
 import PageHeader from '@/app/components/PageHeader'
+import SafetyControls, { getDeliveryModeLabel, withSafetyDefaults } from '@/app/components/SafetyControls'
 
 interface LiepinConfig {
   id?: number
   keywords?: string
   city?: string
   salaryCode?: string
+  dryRun?: boolean
+  maxDeliveries?: number
+  stopOnCaptcha?: boolean
+  stopOnRiskText?: boolean
 }
 
 interface LiepinOption {
@@ -35,6 +40,10 @@ export default function LiepinPage() {
     keywords: '',
     city: '',
     salaryCode: '',
+    dryRun: true,
+    maxDeliveries: 1,
+    stopOnCaptcha: true,
+    stopOnRiskText: true,
   })
   const [options, setOptions] = useState<LiepinOptions>({
     city: [],
@@ -61,9 +70,6 @@ export default function LiepinPage() {
     }
 
     const client = createSSEWithBackoff('http://localhost:8888/api/jobs/login-status/stream', {
-      onOpen: () => {
-        console.log('[SSE] 连接已打开')
-      },
       onError: (e, attempt, delay) => {
         console.warn(`[SSE] 连接错误，准备第${attempt}次重连，延迟 ${delay}ms`, e)
         setCheckingLogin(false)
@@ -102,6 +108,7 @@ export default function LiepinPage() {
     return () => {
       client.close()
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   // 将数据库中的 JSON 数组字符串转换为逗号分隔的可读字符串
@@ -137,12 +144,10 @@ export default function LiepinPage() {
       const response = await fetch('http://localhost:8888/api/liepin/config')
       const data = await response.json()
 
-      console.log('Fetched liepin data:', data)
-
       if (data.config) {
         const normalized = { ...data.config }
         normalized.keywords = parseKeywordsFromDb(data.config.keywords)
-        setConfig(normalized)
+        setConfig(withSafetyDefaults(normalized))
         // 检查当前城市是否在选项列表中
         if (data.options?.city && data.config.city) {
           const cityExists = data.options.city.some((c: LiepinOption) => c.name === data.config.city || c.code === data.config.city)
@@ -271,6 +276,9 @@ export default function LiepinPage() {
         accentBgClass="bg-purple-500"
         actions={
           <div className="flex items-center gap-2">
+            <span className="rounded-full border border-white/30 bg-white/10 px-3 py-1 text-xs text-muted-foreground">
+              {getDeliveryModeLabel(config)}
+            </span>
             {checkingLogin ? (
               <Button size="sm" disabled className="rounded-full bg-gray-300 text-gray-600 cursor-not-allowed px-4 shadow">
                 <BiPlay className="mr-1" /> 检查登录中...
@@ -322,6 +330,11 @@ export default function LiepinPage() {
             </div>
           </CardContent>
         </Card>
+
+        <SafetyControls
+          config={config}
+          onChange={(patch) => setConfig((prev) => ({ ...prev, ...patch }))}
+        />
 
         {/* 搜索配置 */}
         <Card className="animate-in fade-in slide-in-from-bottom-5 duration-700">

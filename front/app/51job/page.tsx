@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { createSSEWithBackoff } from '@/lib/sse'
 import { BiLogOut, BiSave, BiBriefcase, BiPlay, BiStop } from 'react-icons/bi'
 import { Button } from '@/components/ui/button'
@@ -11,12 +11,17 @@ import { Select } from '@/components/ui/select'
 import PageHeader from '@/app/components/PageHeader'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import AnalysisContent from '@/app/51job/analysis/AnalysisContent'
+import SafetyControls, { getDeliveryModeLabel, withSafetyDefaults } from '@/app/components/SafetyControls'
 
 interface Job51Config {
   id?: number
   keywords?: string
   jobArea?: string
   salary?: string // 存储JSON数组字符串，如 ["03","04","05"]
+  dryRun?: boolean
+  maxDeliveries?: number
+  stopOnCaptcha?: boolean
+  stopOnRiskText?: boolean
 }
 
 interface Job51Option { name: string; code: string }
@@ -36,12 +41,20 @@ export default function Job51Page() {
   const [showLogoutResultDialog, setShowLogoutResultDialog] = useState(false)
   const [logoutResult, setLogoutResult] = useState<{ success: boolean; message: string } | null>(null)
 
-  const [config, setConfig] = useState<Job51Config>({ keywords: '', jobArea: '', salary: '' })
+  const [config, setConfig] = useState<Job51Config>({
+    keywords: '',
+    jobArea: '',
+    salary: '',
+    dryRun: true,
+    maxDeliveries: 1,
+    stopOnCaptcha: true,
+    stopOnRiskText: true,
+  })
   const [options, setOptions] = useState<Job51Options>({ jobArea: [], salary: [] })
   const [loadingConfig, setLoadingConfig] = useState(true)
   const [isCustomArea, setIsCustomArea] = useState(false)
   const [backendAvailable, setBackendAvailable] = useState(false)
-  const [cookieSavedAfterLogin, setCookieSavedAfterLogin] = useState(false)
+  const cookieSavedAfterLoginRef = useRef(false)
   // 薪资多选状态：存储选中的code数组
   const [selectedSalaries, setSelectedSalaries] = useState<string[]>([])
   // 薪资下拉面板开关状态
@@ -52,10 +65,6 @@ export default function Job51Page() {
       setCheckingLogin(false)
       return
     }
-    console.log('[51job] useEffect 开始执行')
-    console.log('[51job] window:', typeof window)
-    console.log('[51job] EventSource:', typeof EventSource)
-
     if (typeof window === 'undefined' || typeof EventSource === 'undefined') {
       console.warn('[51job] EventSource 不可用，无法连接SSE')
       setCheckingLogin(false)
@@ -63,9 +72,6 @@ export default function Job51Page() {
     }
 
     const client = createSSEWithBackoff(`${API}/api/jobs/login-status/stream`, {
-      onOpen: () => {
-        console.log('[51job SSE] ✅ 连接已打开')
-      },
       onError: (e, attempt, delay) => {
         console.warn(`[51job SSE] 连接错误，准备第${attempt}次重连，延迟 ${delay}ms`, e)
         setCheckingLogin(false)
@@ -74,13 +80,12 @@ export default function Job51Page() {
         {
           name: 'connected',
           handler: (event) => {
-            console.log('[51job SSE] ✅ 收到 connected 事件:', event.data)
             try {
               const data = JSON.parse(event.data)
               setIsLoggedIn(data.job51LoggedIn || false)
-              if (data.job51LoggedIn && !cookieSavedAfterLogin) {
+              if (data.job51LoggedIn && !cookieSavedAfterLoginRef.current) {
                 fetch(`${API}/api/cookie/save?platform=51job`, { method: 'POST' }).catch(() => {})
-                setCookieSavedAfterLogin(true)
+                cookieSavedAfterLoginRef.current = true
               }
               setCheckingLogin(false)
             } catch (error) {
@@ -95,9 +100,9 @@ export default function Job51Page() {
               const data = JSON.parse(event.data)
               if (data.platform === '51job') {
                 setIsLoggedIn(data.isLoggedIn)
-                if (data.isLoggedIn && !cookieSavedAfterLogin) {
+                if (data.isLoggedIn && !cookieSavedAfterLoginRef.current) {
                   fetch(`${API}/api/cookie/save?platform=51job`, { method: 'POST' }).catch(() => {})
-                  setCookieSavedAfterLogin(true)
+                  cookieSavedAfterLoginRef.current = true
                 }
                 setCheckingLogin(false)
               }
@@ -116,10 +121,9 @@ export default function Job51Page() {
     })
 
     return () => {
-      console.log('[51job SSE] 🔌 关闭SSE连接')
       client.close()
     }
-  }, [backendAvailable])
+  }, [backendAvailable, API])
 
   // 点击外部关闭薪资下拉面板
   useEffect(() => {
@@ -176,7 +180,7 @@ export default function Job51Page() {
         if (Array.isArray(arr) && arr.length > 0) {
           return String(arr[0] ?? '').trim()
         }
-      } catch (_) {
+      } catch {
         // ignore, fall through
       }
     }
@@ -195,7 +199,7 @@ export default function Job51Page() {
         if (Array.isArray(arr)) {
           return arr.map(v => String(v ?? '').trim()).filter(Boolean)
         }
-      } catch (_) {
+      } catch {
         // ignore, fall through
       }
     }
@@ -241,7 +245,7 @@ export default function Job51Page() {
         const areaCode = matchArea?.code || (areaList.find((o) => o.name === '不限')?.code || areaList.find((o) => o.code === '0')?.code || '')
 
         setOptions(opts)
-        setConfig({ ...conf, keywords: normalizedKeywords, jobArea: areaCode, salary: JSON.stringify(salaryCodes) })
+        setConfig(withSafetyDefaults({ ...conf, keywords: normalizedKeywords, jobArea: areaCode, salary: JSON.stringify(salaryCodes) }))
         setSelectedSalaries(salaryCodes)
         setIsCustomArea(false)
       }
@@ -264,11 +268,12 @@ export default function Job51Page() {
         } else {
           setLoadingConfig(false)
         }
-      } catch (e) {
+      } catch {
         setBackendAvailable(false)
         setLoadingConfig(false)
       }
     })()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const handleStartDelivery = async () => {
@@ -297,8 +302,6 @@ export default function Job51Page() {
       }
       
       const data = await response.json()
-      console.log('[51job] 停止投递响应:', data)
-      
       // 根据后端返回结果切换按钮状态
       if (data.success) {
         // 停止成功，恢复按钮
@@ -322,21 +325,9 @@ export default function Job51Page() {
       setIsLoggedIn(false)
       setLogoutResult({ success: data.success, message: data.success ? '已退出登录，Cookie已清空。' : data.message })
       setShowLogoutResultDialog(true)
-    } catch (error) {
+    } catch {
       setLogoutResult({ success: false, message: '退出登录失败：网络或服务异常。' })
       setShowLogoutResultDialog(true)
-    }
-  }
-
-  const handleSaveCookie = async () => {
-    try {
-      const response = await fetch(`${API}/api/cookie/save?platform=51job`, { method: 'POST' })
-      const data = await response.json()
-      setSaveResult({ success: data.success, message: data.success ? '配置保存成功。' : data.message })
-      setShowSaveDialog(true)
-    } catch (error) {
-      setSaveResult({ success: false, message: '配置保存失败：网络或服务异常。' })
-      setShowSaveDialog(true)
     }
   }
 
@@ -405,6 +396,9 @@ export default function Job51Page() {
         accentBgClass="bg-blue-500"
         actions={
           <div className="flex items-center gap-2">
+            <span className="rounded-full border border-white/30 bg-white/10 px-3 py-1 text-xs text-muted-foreground">
+              {getDeliveryModeLabel(config)}
+            </span>
             {checkingLogin ? (
               <Button size="sm" disabled className="rounded-full bg-gray-300 text-gray-600 cursor-not-allowed px-4 shadow">
                 <BiPlay className="mr-1" /> 检查登录中...
@@ -455,6 +449,11 @@ export default function Job51Page() {
               </div>
             </CardContent>
           </Card>
+
+          <SafetyControls
+            config={config}
+            onChange={(patch) => setConfig((prev) => ({ ...prev, ...patch }))}
+          />
 
           {/* 配置表单 */}
           <Card className="animate-in fade-in slide-in-from-bottom-5 duration-700">

@@ -2,6 +2,10 @@ package com.getjobs.worker.zhilian;
 
 import com.getjobs.application.entity.ZhilianJobDataEntity;
 import com.getjobs.application.service.ZhilianService;
+import com.getjobs.worker.safety.DeliveryActionResult;
+import com.getjobs.worker.safety.DeliveryDecision;
+import com.getjobs.worker.safety.DeliveryJobInfo;
+import com.getjobs.worker.safety.DeliverySafety;
 import com.getjobs.worker.utils.Job;
 import com.getjobs.worker.utils.JobUtils;
 import com.getjobs.worker.utils.PlaywrightUtil;
@@ -43,6 +47,7 @@ public class ZhiLian {
     private final List<Job> resultList = new ArrayList<>();
     private boolean isLimit = false;
     private int maxPage = 500;
+    private DeliverySafety safety;
 
     private static final String HOME_URL = "https://www.zhaopin.com/sou/";
 
@@ -77,6 +82,14 @@ public class ZhiLian {
         log.info("智联招聘准备工作开始...");
         resultList.clear();
         isLimit = false;
+        safety = DeliverySafety.create(
+                "zhilian",
+                config != null ? config.getDryRun() : true,
+                config != null ? config.getMaxDeliveries() : 1,
+                config != null ? config.getStopOnCaptcha() : true,
+                config != null ? config.getStopOnRiskText() : true,
+                message -> sendProgress(message, null, null)
+        );
         log.info("智联招聘准备工作完成");
     }
 
@@ -312,6 +325,18 @@ public class ZhiLian {
                     log.info("岗位【{}】未找到立即投递按钮，跳过", pj.jobTitle);
                     continue;
                 }
+                DeliveryJobInfo safetyJob = DeliveryJobInfo.of(
+                        pj.companyName,
+                        pj.jobTitle,
+                        pj.jobId != null && !pj.jobId.isEmpty() ? pj.jobId : page.url()
+                );
+                DeliveryDecision decision = safety.canProceed(page, safetyJob, "zhilian.apply");
+                if (!decision.isAllowed()) {
+                    if (safety.isStopped()) {
+                        return false;
+                    }
+                    continue;
+                }
                 try {
                     // 点击前：注册监听器，统一关闭由当前页面打开的新窗口（弹出页）
                     java.util.function.Consumer<Page> closer = (Page newPage) -> {
@@ -345,8 +370,15 @@ public class ZhiLian {
                     } catch (Exception ex) {
                         log.warn("更新投递状态失败: {}", ex.getMessage());
                     }
+                    Job deliveredJob = new Job();
+                    deliveredJob.setCompanyName(pj.companyName);
+                    deliveredJob.setJobName(pj.jobTitle);
+                    deliveredJob.setHref(pj.jobId);
+                    resultList.add(deliveredJob);
+                    safety.recordDelivered(safetyJob, "zhilian.apply", "apply button clicked");
                 } catch (Exception clickEx) {
                     log.warn("投递失败，继续下一个岗位: {}", clickEx.getMessage());
+                    safety.recordFailed(safetyJob, "zhilian.apply", clickEx.getMessage());
                 }
 
                 if (checkIsLimit()) {
@@ -410,8 +442,11 @@ public class ZhiLian {
                 }
             }
 
-            // 投递相似职位
-            deliverSimilarJobs(dialogPage);
+            if (Boolean.TRUE.equals(config.getAllowSimilarJobs())) {
+                deliverSimilarJobs(dialogPage);
+            } else {
+                log.info("已跳过智联相似职位投递，allowSimilarJobs=false");
+            }
 
             // 关闭弹窗页面
             try {
@@ -430,6 +465,12 @@ public class ZhiLian {
      */
     private void deliverSimilarJobs(Page dialogPage) {
         try {
+            DeliveryJobInfo batchInfo = DeliveryJobInfo.of("相似职位", "智联相似职位批量", dialogPage.url());
+            DeliveryDecision decision = safety.canProceed(dialogPage, batchInfo, "zhilian.similar-apply");
+            if (!decision.isAllowed()) {
+                return;
+            }
+
             // 全选相似职位
             Locator selectAllCheckbox = dialogPage.locator("div.applied-select-all input");
             if (selectAllCheckbox.count() > 0 && !selectAllCheckbox.isChecked()) {
@@ -478,6 +519,7 @@ public class ZhiLian {
                 postButton.click();
                 PlaywrightUtil.sleep(2);
                 log.info("相似职位投递成功！");
+                safety.recordDelivered(batchInfo, "zhilian.similar-apply", "similar jobs posted");
             }
 
         } catch (Exception e) {
@@ -497,6 +539,14 @@ public class ZhiLian {
                 if (text != null && text.contains("达到上限")) {
                     log.info("今日投递已达上限！");
                     isLimit = true;
+                    if (safety != null) {
+                        safety.stopBecauseRisk(
+                                DeliveryJobInfo.of("-", "zhilian page", page.url()),
+                                "zhilian.limit-check",
+                                DeliveryActionResult.RISK_STOPPED,
+                                "daily delivery limit reached"
+                        );
+                    }
                     return true;
                 }
             }
@@ -636,6 +686,8 @@ public class ZhiLian {
      * 检查是否应该停止
      */
     private boolean shouldStop() {
-        return shouldStopCallback != null && shouldStopCallback.get();
+        boolean externalStop = shouldStopCallback != null && shouldStopCallback.get();
+        boolean safetyStop = safety != null && safety.isStopped();
+        return externalStop || safetyStop;
     }
 }
