@@ -41,6 +41,7 @@ public class SafetyConfigSchemaInitializer {
             ensureColumn(connection, "job51_config", "browser_profile_mode", "TEXT DEFAULT 'cookie_db'", "'cookie_db'");
             ensureColumn(connection, "zhilian_config", "browser_profile_mode", "TEXT DEFAULT 'cookie_db'", "'cookie_db'");
             ensureFilterTemplateTable(connection);
+            ensureAutomationTables(connection);
         } catch (Exception e) {
             log.warn("补齐投递安全配置列失败: {}", e.getMessage());
         }
@@ -117,6 +118,49 @@ public class SafetyConfigSchemaInitializer {
                         updated_at TEXT
                     )
                     """);
+        }
+    }
+
+    private void ensureAutomationTables(Connection connection) throws Exception {
+        try (Statement statement = connection.createStatement()) {
+            statement.execute("""
+                    CREATE TABLE IF NOT EXISTS automation_task (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        name TEXT,
+                        platforms TEXT,
+                        mode TEXT,
+                        status TEXT,
+                        filter_template_id INTEGER,
+                        keywords TEXT,
+                        city TEXT,
+                        max_applications INTEGER DEFAULT 1,
+                        max_daily_applications INTEGER DEFAULT 1,
+                        allow_real_actions INTEGER DEFAULT 0,
+                        review_approved INTEGER DEFAULT 0,
+                        last_message TEXT,
+                        started_at TEXT,
+                        completed_at TEXT,
+                        created_at TEXT,
+                        updated_at TEXT
+                    )
+                    """);
+            statement.execute("""
+                    CREATE TABLE IF NOT EXISTS automation_audit (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        task_id INTEGER,
+                        platform TEXT,
+                        event_type TEXT,
+                        target_company TEXT,
+                        target_job TEXT,
+                        target_url TEXT,
+                        result TEXT,
+                        message TEXT,
+                        created_at TEXT
+                    )
+                    """);
+            statement.execute("CREATE INDEX IF NOT EXISTS idx_automation_task_status ON automation_task(status)");
+            statement.execute("CREATE INDEX IF NOT EXISTS idx_automation_audit_task_id ON automation_audit(task_id)");
+            statement.execute("CREATE INDEX IF NOT EXISTS idx_automation_audit_platform_event_time ON automation_audit(platform, event_type, created_at)");
         }
     }
 

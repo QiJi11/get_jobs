@@ -45,6 +45,36 @@ public class PlaywrightController {
     }
 
     /**
+     * 只读查看 Boss 页面状态。不导航、不点击、不触发投递。
+     */
+    @GetMapping("/boss-debug")
+    public ResponseEntity<Map<String, Object>> getBossDebug() {
+        return ResponseEntity.ok(playwrightManager.getBossDebugInfo());
+    }
+
+    /**
+     * 人工扫码后手动刷新一次 Boss 登录态，避免登录页阶段后台高频轮询。
+     */
+    @PostMapping("/boss-login-check")
+    public ResponseEntity<Map<String, Object>> checkBossLogin() {
+        Map<String, Object> result = new HashMap<>();
+        boolean loggedIn = playwrightManager.refreshBossLoginStatus();
+        result.put("success", true);
+        result.put("bossLoggedIn", loggedIn);
+        result.put("loginStateSource", playwrightManager.getLoginStateSource("boss"));
+        result.put("debug", playwrightManager.getBossDebugInfo());
+        return ResponseEntity.ok(result);
+    }
+
+    /**
+     * 只重置 Boss 页面/上下文，不删除独立 Profile，不影响其它平台。
+     */
+    @PostMapping("/boss-reset")
+    public ResponseEntity<Map<String, Object>> resetBossContext() {
+        return ResponseEntity.ok(playwrightManager.resetBossContext());
+    }
+
+    /**
      * 手动初始化浏览器或指定平台。
      * 不带 platform 只启动 Playwright 引擎；platform=all 才会初始化全部平台。
      */

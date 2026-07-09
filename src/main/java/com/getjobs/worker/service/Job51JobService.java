@@ -36,6 +36,14 @@ public class Job51JobService implements JobPlatformService {
 
     @Override
     public void executeDelivery(Consumer<JobProgressMessage> progressCallback) {
+        executeDelivery(progressCallback, null);
+    }
+
+    @Override
+    public void executeDelivery(
+            Consumer<JobProgressMessage> progressCallback,
+            DeliveryExecutionOptions executionOptions
+    ) {
         if (isRunning) {
             progressCallback.accept(JobProgressMessage.warning(PLATFORM, "任务已在运行中"));
             return;
@@ -65,6 +73,9 @@ public class Job51JobService implements JobPlatformService {
 
             // 加载配置（统一从 job51_config 专表读取）
             Job51Config config = configService.getJob51Config();
+            if (executionOptions != null) {
+                executionOptions.applyTo(config);
+            }
             progressCallback.accept(JobProgressMessage.info(PLATFORM, "配置加载成功"));
 
             progressCallback.accept(JobProgressMessage.info(PLATFORM, "开始投递任务..."));

@@ -44,6 +44,11 @@ class SafetyConfigSchemaInitializerTest {
             assertEquals("cookie_db", readString(connection, "liepin_config", "browser_profile_mode"));
             assertEquals("cookie_db", readString(connection, "job51_config", "browser_profile_mode"));
             assertEquals("cookie_db", readString(connection, "zhilian_config", "browser_profile_mode"));
+            assertTrue(tableExists(connection, "automation_task"));
+            assertTrue(tableExists(connection, "automation_audit"));
+            assertTrue(columnExists(connection, "automation_task", "allow_real_actions"));
+            assertTrue(columnExists(connection, "automation_task", "review_approved"));
+            assertTrue(columnExists(connection, "automation_audit", "event_type"));
         }
     }
 

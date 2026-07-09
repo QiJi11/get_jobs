@@ -19,6 +19,16 @@ public interface JobPlatformService {
     void executeDelivery(Consumer<JobProgressMessage> progressCallback);
 
     /**
+     * 使用本次任务的安全覆盖参数执行投递任务。
+     */
+    default void executeDelivery(
+            Consumer<JobProgressMessage> progressCallback,
+            DeliveryExecutionOptions executionOptions
+    ) {
+        executeDelivery(progressCallback);
+    }
+
+    /**
      * 停止当前投递任务
      */
     void stopDelivery();

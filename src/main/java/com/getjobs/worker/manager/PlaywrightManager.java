@@ -9,6 +9,7 @@ import com.microsoft.playwright.*;
 import com.microsoft.playwright.options.Cookie;
 import com.microsoft.playwright.options.WaitUntilState;
 import com.microsoft.playwright.options.LoadState;
+import com.microsoft.playwright.options.ViewportSize;
 import jakarta.annotation.PreDestroy;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
@@ -23,6 +24,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -231,9 +233,10 @@ public class PlaywrightManager {
 
     private void ensureBossPage() throws IOException {
         init();
-        if (bossPage != null) {
+        if (bossPage != null && !bossPage.isClosed()) {
             return;
         }
+        bossPage = null;
 
         if (useBossPersistentProfile()) {
             bossContext = launchBossPersistentContext();
@@ -250,6 +253,28 @@ public class PlaywrightManager {
             log.info("✓ Boss Page已创建（Cookie DB模式）");
         }
         bossPage.setDefaultTimeout(DEFAULT_TIMEOUT);
+    }
+
+    private Page freshBossPageForLogin() {
+        if (bossContext == null) {
+            throw new IllegalStateException("Boss上下文未初始化");
+        }
+
+        List<Page> oldPages = new ArrayList<>(bossContext.pages());
+        Page loginPage = bossContext.newPage();
+        loginPage.setDefaultTimeout(DEFAULT_TIMEOUT);
+        bossPage = loginPage;
+
+        for (Page oldPage : oldPages) {
+            try {
+                if (oldPage != null && oldPage != loginPage && !oldPage.isClosed()) {
+                    oldPage.close();
+                }
+            } catch (Exception e) {
+                log.debug("关闭Boss旧空白页失败: {}", e.getMessage());
+            }
+        }
+        return loginPage;
     }
 
     private String normalizePlatform(String platform) {
@@ -280,9 +305,10 @@ public class PlaywrightManager {
     }
 
     private BrowserContext launchBossPersistentContext() throws IOException {
-        Path profileDir = Path.of(System.getProperty("user.home"), ".getjobs", "browser-profiles", "boss");
+        Path profileDir = getBossProfileDir();
         Files.createDirectories(profileDir);
-        return playwright.chromium().launchPersistentContext(profileDir, new BrowserType.LaunchPersistentContextOptions()
+
+        BrowserType.LaunchPersistentContextOptions options = new BrowserType.LaunchPersistentContextOptions()
                 .setHeadless(false)
                 .setSlowMo(80)
                 .setViewportSize(null)
@@ -290,7 +316,44 @@ public class PlaywrightManager {
                 .setArgs(List.of(
                         "--remote-debugging-port=" + BOSS_CDP_PORT,
                         "--start-maximized"
-                )));
+                ));
+
+        String browserChannel = resolveBossBrowserChannel();
+        if (!browserChannel.isBlank()) {
+            options.setChannel(browserChannel);
+            log.info("Boss 持久Profile使用浏览器Channel: {}", browserChannel);
+        } else {
+            log.info("Boss 持久Profile使用Playwright内置Chromium");
+        }
+
+        return playwright.chromium().launchPersistentContext(profileDir, options);
+    }
+
+    private String resolveBossBrowserChannel() {
+        String configured = System.getProperty("getjobs.boss.browser.channel", "").trim();
+        if ("bundled".equalsIgnoreCase(configured) || "chromium".equalsIgnoreCase(configured)) {
+            return "";
+        }
+        if (!configured.isBlank()) {
+            return configured;
+        }
+        if (Files.exists(Path.of("C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"))
+                || Files.exists(Path.of("C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe"))) {
+            return "chrome";
+        }
+        return "";
+    }
+
+    private boolean isBossInitScriptEnabled() {
+        return Boolean.parseBoolean(System.getProperty("getjobs.boss.init-script.enabled", "false"));
+    }
+
+    private Path getBossProfileDir() {
+        String configured = System.getProperty("getjobs.boss.profile.dir", "").trim();
+        if (!configured.isBlank()) {
+            return Path.of(configured);
+        }
+        return Path.of(System.getProperty("user.home"), ".getjobs", "browser-profiles", "boss");
     }
 
     private Page firstOrNewPage(BrowserContext targetContext) {
@@ -302,6 +365,10 @@ public class PlaywrightManager {
      * 在上下文层统一注入 Boss 脚本，仅对 zhipin.com 生效。
      */
     private void injectBossInitScript(BrowserContext targetContext) {
+        if (!isBossInitScriptEnabled()) {
+            log.info("Boss Context init script 默认禁用，仅保留独立Profile登录态验证");
+            return;
+        }
         String script = readResourceText(BOSS_INIT_SCRIPT_RESOURCE);
         if (script == null || script.isBlank()) {
             log.warn("Boss 反检测脚本未加载，资源不存在或为空: {}", BOSS_INIT_SCRIPT_RESOURCE);
@@ -417,6 +484,20 @@ public class PlaywrightManager {
      */
     private boolean checkIfLoggedIn() {
         // 更稳健的登录判断：优先检测用户头像/昵称是否可见；备用检测登录入口是否可见且包含“登录”文本
+        try {
+            String url = bossPage.url();
+            if (url != null && url.contains("/web/geek/")) {
+                return true;
+            }
+        } catch (Exception ignored) {}
+
+        try {
+            Locator messageEntry = bossPage.getByText("消息").first();
+            if (messageEntry.isVisible()) {
+                return true;
+            }
+        } catch (Exception ignored) {}
+
         try {
             Locator userLabel = bossPage.locator("li.nav-figure span.label-text").first();
             if (userLabel.isVisible()) {
@@ -1497,16 +1578,19 @@ public class PlaywrightManager {
      */
     public void triggerBossLogin() {
         try {
-            initPlatform("boss");
+            ensureBossPage();
             if (bossPage == null) {
                 throw new IllegalStateException("Boss页面未初始化");
             }
+
+            bossPage = freshBossPageForLogin();
 
             if (checkIfLoggedIn()) {
                 log.info("检测到已登录Boss，跳过登录触发");
                 return;
             }
 
+            pauseBossMonitoring();
             bossPage.navigate(BOSS_URL + "/web/user/?ka=header-login", new Page.NavigateOptions()
                     .setTimeout(60000)
                     .setWaitUntil(WaitUntilState.DOMCONTENTLOADED));
@@ -1517,31 +1601,11 @@ public class PlaywrightManager {
             }
 
             try {
-                Locator qrSwitch = bossPage.locator(".btn-sign-switch.ewm-switch").first();
-                if (qrSwitch.isVisible()) {
-                    qrSwitch.click(new Locator.ClickOptions().setTimeout(DEFAULT_TIMEOUT));
-                    log.info("已切换到Boss二维码登录，等待用户扫码...");
-                    return;
-                }
-
-                Locator tip = bossPage.getByText("APP扫码登录").first();
-                if (tip.isVisible()) {
-                    tip.click(new Locator.ClickOptions().setTimeout(DEFAULT_TIMEOUT));
-                    log.info("已点击Boss APP扫码登录入口，等待用户扫码...");
-                    return;
-                }
-
-                Locator legacy = bossPage.locator("li.sign-switch-tip").first();
-                if (legacy.isVisible()) {
-                    legacy.click(new Locator.ClickOptions().setTimeout(DEFAULT_TIMEOUT));
-                    log.info("已通过旧版选择器切换Boss二维码登录，等待用户扫码...");
-                    return;
-                }
-
-                log.info("Boss登录页已打开，未找到二维码切换按钮，请手动选择扫码登录");
+                bossPage.bringToFront();
             } catch (Exception e) {
-                log.debug("切换Boss二维码登录失败: {}", e.getMessage());
+                log.debug("Boss登录页置前失败: {}", e.getMessage());
             }
+            log.info("Boss登录页已打开，后台登录监控已暂停，请手动选择登录方式并在登录后手动刷新状态");
         } catch (Exception e) {
             log.error("触发Boss登录流程失败: {}", e.getMessage(), e);
             throw new RuntimeException("触发Boss登录流程失败", e);
@@ -1630,6 +1694,130 @@ public class PlaywrightManager {
     public void resumeBossMonitoring() {
         bossMonitoringPaused = false;
         log.debug("Boss登录监控已恢复");
+    }
+
+    /**
+     * 手动刷新 Boss 登录态。用于人工扫码后一次性确认，避免登录页阶段后台频繁轮询。
+     */
+    public boolean refreshBossLoginStatus() {
+        try {
+            if (bossPage == null || bossPage.isClosed()) {
+                setLoginStatus("boss", false);
+                return false;
+            }
+
+            boolean loggedIn = checkIfLoggedIn();
+            if (loggedIn) {
+                onLoginSuccess("boss");
+            } else {
+                setLoginStatus("boss", false);
+            }
+            return loggedIn;
+        } catch (Exception e) {
+            log.debug("手动刷新Boss登录态失败: {}", e.getMessage());
+            setLoginStatus("boss", false);
+            return false;
+        }
+    }
+
+    /**
+     * 只读返回 Boss 页面和独立 Profile 的当前状态，不导航、不点击、不投递。
+     */
+    public Map<String, Object> getBossDebugInfo() {
+        Map<String, Object> debug = new LinkedHashMap<>();
+        debug.put("platformInitialized", bossPage != null);
+        debug.put("hasBossContext", bossContext != null);
+        debug.put("hasBossPage", bossPage != null);
+        debug.put("loginStateSource", getLoginStateSource("boss"));
+        debug.put("bossLoggedIn", isLoggedIn("boss"));
+        debug.put("bossMonitoringPaused", bossMonitoringPaused);
+        debug.put("bossCdpPort", BOSS_CDP_PORT);
+        debug.put("profileDir", getBossProfileDir().toString());
+
+        if (bossContext != null) {
+            try {
+                debug.put("pagesCount", bossContext.pages().size());
+            } catch (Exception e) {
+                debug.put("pagesCountError", e.getMessage());
+            }
+        }
+
+        if (bossPage != null) {
+            boolean pageClosed = true;
+            try {
+                pageClosed = bossPage.isClosed();
+            } catch (Exception e) {
+                debug.put("pageClosedError", e.getMessage());
+            }
+            debug.put("pageClosed", pageClosed);
+
+            if (!pageClosed) {
+                try {
+                    debug.put("url", bossPage.url());
+                } catch (Exception e) {
+                    debug.put("urlError", e.getMessage());
+                }
+                try {
+                    debug.put("title", bossPage.title());
+                } catch (Exception e) {
+                    debug.put("titleError", e.getMessage());
+                }
+                try {
+                    ViewportSize viewport = bossPage.viewportSize();
+                    if (viewport != null) {
+                        debug.put("viewport", Map.of("width", viewport.width, "height", viewport.height));
+                    }
+                } catch (Exception e) {
+                    debug.put("viewportError", e.getMessage());
+                }
+            }
+        }
+
+        return debug;
+    }
+
+    /**
+     * 只重置 Boss 页面/上下文，不删除独立 Profile，不影响其它平台，不启动投递。
+     */
+    public Map<String, Object> resetBossContext() {
+        synchronized (lifecycleLock) {
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("profileDeleted", false);
+            result.put("profileDir", getBossProfileDir().toString());
+
+            try {
+                if (bossPage != null && !bossPage.isClosed()) {
+                    bossPage.close();
+                    result.put("pageClosed", true);
+                } else {
+                    result.put("pageClosed", bossPage == null ? "none" : "already_closed");
+                }
+            } catch (Exception e) {
+                result.put("pageCloseError", e.getMessage());
+            } finally {
+                bossPage = null;
+            }
+
+            try {
+                if (bossContext != null && bossContext != context) {
+                    bossContext.close();
+                    result.put("contextClosed", true);
+                } else {
+                    result.put("contextClosed", bossContext == null ? "none" : "shared_context_kept");
+                }
+            } catch (Exception e) {
+                result.put("contextCloseError", e.getMessage());
+            } finally {
+                bossContext = null;
+            }
+
+            bossMonitoringPaused = false;
+            loginStatus.put("boss", false);
+            loginStateSources.remove("boss");
+            result.put("success", true);
+            result.put("message", "Boss上下文已重置，独立Profile未删除");
+            return result;
+        }
     }
 
     /**
